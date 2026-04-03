@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import pickle
 import tempfile
 import uuid
 from pathlib import Path
@@ -24,8 +25,37 @@ APP_ROOT = Path(__file__).resolve().parent
 
 app = Flask(__name__)
 
-# In-memory cache for Part 3 lazy Plotly loads (single-user dev; replace with Redis for multi-worker).
+# In-memory + temp-file cache for Part 3 plots (survives Flask debug reloader child process).
 _PART3_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def _part3_cache_file(result_id: str) -> str:
+    return os.path.join(tempfile.gettempdir(), f"anomaly_pt3_{result_id}.pkl")
+
+
+def _part3_store_context(result_id: str, df_for_script: Any, out_df: Any) -> None:
+    ctx = {"df_for_script": df_for_script, "out_df": out_df}
+    _PART3_CACHE[result_id] = ctx
+    try:
+        with open(_part3_cache_file(result_id), "wb") as f:
+            pickle.dump(ctx, f, protocol=pickle.HIGHEST_PROTOCOL)
+    except OSError:
+        pass
+
+
+def _part3_load_context(result_id: str) -> dict[str, Any] | None:
+    if result_id in _PART3_CACHE:
+        return _PART3_CACHE[result_id]
+    path = _part3_cache_file(result_id)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "rb") as f:
+            ctx = pickle.load(f)
+        _PART3_CACHE[result_id] = ctx
+        return ctx
+    except OSError:
+        return None
 
 
 def _save_upload_to_temp(file_storage, *, suffix: str) -> str:
@@ -309,11 +339,17 @@ def api_part3_plot(result_id: str):
     tag = (request.args.get("tag") or "").strip()
     if not tag:
         return jsonify({"error": "missing tag"}), 400
-    ctx = _PART3_CACHE.get(result_id)
+    compare = [c.strip() for c in request.args.getlist("compare") if c and str(c).strip()]
+    ctx = _part3_load_context(result_id)
     if not ctx:
         return jsonify({"error": "expired or invalid session"}), 404
     try:
-        fig = build_plot_figure_for_tag(ctx["df_for_script"], ctx["out_df"], tag)
+        fig = build_plot_figure_for_tag(
+            ctx["df_for_script"],
+            ctx["out_df"],
+            tag,
+            compare_tags=compare,
+        )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return Response(fig.to_json(), mimetype="application/json")
@@ -331,8 +367,13 @@ def part3_drift_detection():
     df_for_script = result.pop("df_for_script")
     out_df = result.pop("out_df")
     result_id = uuid.uuid4().hex
-    _PART3_CACHE[result_id] = {"df_for_script": df_for_script, "out_df": out_df}
+    _part3_store_context(result_id, df_for_script, out_df)
     tag_names = [t["tag"] for t in result["tag_summaries"]]
+    all_plot_tags = sorted(c for c in df_for_script.columns if c != "Timestamp")
+    monthly_pages = result["monthly_pages_by_tag"]
+    months_by_tag_idx = [
+        [p["month"] for p in monthly_pages.get(s["tag"], [])] for s in result["tag_summaries"]
+    ]
 
     return render_template(
         "results.html",
@@ -341,6 +382,8 @@ def part3_drift_detection():
         part3={
             "result_id": result_id,
             "tag_names": tag_names,
+            "all_plot_tags": all_plot_tags,
+            "months_by_tag_idx": months_by_tag_idx,
             "tag_summaries": result["tag_summaries"],
             "details_by_tag": result["details_by_tag"],
             "monthly_pages_by_tag": result["monthly_pages_by_tag"],

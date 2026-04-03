@@ -20,42 +20,128 @@
       el.style.display = isHidden ? "block" : "none";
     }
 
-    function showDriftTag(tagIndex) {
-      const rows = document.querySelectorAll(".drift-tag-panel");
-      rows.forEach(r => r.style.display = "none");
-      const selected = document.getElementById("drift_tag_" + tagIndex);
-      if (selected) {
-        selected.style.display = "block";
-        const defaultMonth = selected.getAttribute("data-default-month");
-        if (defaultMonth) {
-          showDriftMonth(tagIndex, defaultMonth);
-        }
+    function syncPart3CompareOptions(primaryTagName) {
+      const all = window.__part3AllTags || [];
+      const sel = document.getElementById("part3CompareSelect");
+      if (!sel) return;
+      const prev = new Set(Array.from(sel.selectedOptions || []).map(function (o) { return o.value; }));
+      sel.innerHTML = "";
+      all.forEach(function (name) {
+        if (name === primaryTagName) return;
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        if (prev.has(name)) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    }
+
+    function getPart3SelectedCompare(primaryName) {
+      const sel = document.getElementById("part3CompareSelect");
+      if (!sel) return [];
+      const out = [];
+      for (let i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].selected) out.push(sel.options[i].value);
       }
-      loadPart3Plot(parseInt(tagIndex, 10));
+      return out.filter(function (t) { return t && t !== primaryName; });
+    }
+
+    function showDriftTag(tagIndex) {
+      const idx = parseInt(tagIndex, 10);
+      const drifted = window.__part3DriftedTags || [];
+      const primaryName = drifted[idx];
+      const rows = document.querySelectorAll(".drift-tag-panel");
+      rows.forEach(function (r) { r.style.display = "none"; });
+      const selected = document.getElementById("drift_tag_" + idx);
+      if (selected) selected.style.display = "block";
+      refreshPart3MonthDropdown(idx);
+      if (primaryName) syncPart3CompareOptions(primaryName);
+      loadPart3Plot(idx);
+    }
+
+    function onPart3CompareChange() {
+      const primarySel = document.getElementById("part3PrimaryTag");
+      if (!primarySel) return;
+      loadPart3Plot(parseInt(primarySel.value, 10));
+    }
+
+    function clearPart3Compare() {
+      const sel = document.getElementById("part3CompareSelect");
+      if (!sel) return;
+      for (let i = 0; i < sel.options.length; i++) {
+        sel.options[i].selected = false;
+      }
+      onPart3CompareChange();
+    }
+
+    function refreshPart3MonthDropdown(tagIdx) {
+      const months = (window.__part3MonthsByTagIdx || [])[tagIdx] || [];
+      const monthSel = document.getElementById("part3MonthSelect");
+      if (!monthSel) return;
+      monthSel.innerHTML = "";
+      if (months.length === 0) {
+        monthSel.disabled = true;
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "No data by month";
+        monthSel.appendChild(opt);
+        showDriftMonth(tagIdx, null);
+        return;
+      }
+      monthSel.disabled = false;
+      months.forEach(function (m) {
+        const opt = document.createElement("option");
+        opt.value = m;
+        opt.textContent = m;
+        monthSel.appendChild(opt);
+      });
+      monthSel.value = months[0];
+      showDriftMonth(tagIdx, months[0]);
+    }
+
+    function onPart3MonthChange(month) {
+      const primarySel = document.getElementById("part3PrimaryTag");
+      if (!primarySel) return;
+      const idx = parseInt(primarySel.value, 10);
+      showDriftMonth(idx, month || null);
     }
 
     async function loadPart3Plot(tagIndex) {
-      const names = window.__part3TagNames || [];
+      const names = window.__part3DriftedTags || [];
       const rid = window.__part3ResultId || "";
       const tag = names[tagIndex];
       const host = document.getElementById("part3PlotHost");
       const hint = document.getElementById("part3PlotHint");
-      if (!host || !tag || !rid) return;
+      if (!host || !tag || !rid) {
+        if (hint) {
+          hint.textContent = "Missing session or tag data. Re-run Part 3 upload.";
+          hint.style.display = "block";
+        }
+        return;
+      }
       if (hint) {
         hint.textContent = "Loading plot…";
         hint.style.display = "block";
       }
+      const params = new URLSearchParams();
+      params.set("tag", tag);
+      getPart3SelectedCompare(tag).forEach(function (c) { params.append("compare", c); });
       try {
-        const res = await fetch("/api/part3/plot/" + encodeURIComponent(rid) + "?tag=" + encodeURIComponent(tag));
+        const res = await fetch("/api/part3/plot/" + encodeURIComponent(rid) + "?" + params.toString());
         if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
+          const err = await res.json().catch(function () { return {}; });
           throw new Error(err.error || res.statusText);
         }
         const fig = await res.json();
         if (typeof Plotly !== "undefined" && Plotly.purge) {
           Plotly.purge(host);
         }
-        Plotly.newPlot(host, fig.data, fig.layout, { responsive: true, displaylogo: false });
+        Plotly.newPlot(host, fig.data, fig.layout, {
+          responsive: true,
+          displaylogo: false,
+          modeBarButtonsToRemove: ["lasso2d", "select2d"],
+          toImageButtonOptions: { format: "png", filename: "drift_chart", scale: 2 },
+        });
         if (hint) hint.style.display = "none";
       } catch (e) {
         if (hint) {
@@ -66,15 +152,36 @@
     }
 
     function showDriftMonth(tagIndex, month) {
-      const allMonthPanels = document.querySelectorAll('.drift-month-panel[data-tag-index=\"' + tagIndex + '\"]');
-      allMonthPanels.forEach(p => p.style.display = "none");
-      const selected = document.querySelector('.drift-month-panel[data-tag-index=\"' + tagIndex + '\"][data-month=\"' + month + '\"]');
-      if (selected) selected.style.display = "block";
+      const panels = document.querySelectorAll('.drift-month-panel[data-tag-index="' + tagIndex + '"]');
+      panels.forEach(function (p) {
+        if (month == null || month === "") {
+          p.style.display = p.getAttribute("data-first-month") === "1" ? "block" : "none";
+          return;
+        }
+        p.style.display = p.getAttribute("data-month") === month ? "block" : "none";
+      });
     }
 
     document.addEventListener("DOMContentLoaded", function () {
-      if (window.__part3TagNames && window.__part3TagNames.length > 0) {
-        loadPart3Plot(0);
+      const raw = document.getElementById("part3-config");
+      if (!raw) return;
+      try {
+        const cfg = JSON.parse(raw.textContent);
+        window.__part3ResultId = cfg.resultId;
+        window.__part3DriftedTags = cfg.driftedTags || [];
+        window.__part3AllTags = cfg.allTags || [];
+        window.__part3MonthsByTagIdx = cfg.monthsByTagIdx || [];
+        const primarySel = document.getElementById("part3PrimaryTag");
+        if (primarySel && window.__part3DriftedTags.length > 0) {
+          showDriftTag(primarySel.value);
+        }
+      } catch (err) {
+        console.error("part3-config parse error", err);
+        const hint = document.getElementById("part3PlotHint");
+        if (hint) {
+          hint.textContent = "Could not load Part 3 configuration.";
+          hint.style.display = "block";
+        }
       }
     });
   </script>
@@ -305,49 +412,55 @@
       {% endif %}
 
       {% if part3 %}
-      <div class="card">
-        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Part 3: Drift Detection</h2>
+      <div class="card part3-card">
+        <div class="dashboard-section-head">
+          <h2 class="dashboard-section-title">Part 3 · Drift detection</h2>
+          <p class="dashboard-section-sub text-muted">Primary tag uses the left axis; compare tags use an independent right axis so different units stay readable.</p>
+        </div>
         {% if part3.tag_summaries|length == 0 %}
           <div class="text-muted">No drifted tags found in the uploaded file.</div>
         {% else %}
-          <script>
-            window.__part3TagNames = {{ part3.tag_names | tojson }};
-            window.__part3ResultId = {{ part3.result_id | tojson }};
-          </script>
-          <div class="row mb-3">
-            <div class="col-4">
-              <label>Select drifted tag</label>
-              <select class="form-select" onchange="showDriftTag(this.value)">
+          <script type="application/json" id="part3-config">{{ {"resultId": part3.result_id, "driftedTags": part3.tag_names, "allTags": part3.all_plot_tags, "monthsByTagIdx": part3.months_by_tag_idx}|tojson }}</script>
+          <div class="row mb-3 g-3 part3-controls align-items-end">
+            <div class="col-lg-3 col-md-6">
+              <label for="part3PrimaryTag" class="form-label-sm">Primary tag (left axis)</label>
+              <select id="part3PrimaryTag" class="form-select form-select-dashboard" onchange="showDriftTag(this.value)">
                 {% for t in part3.tag_summaries %}
                   <option value="{{ loop.index0 }}">{{ t.tag }}</option>
                 {% endfor %}
               </select>
             </div>
+            <div class="col-lg-3 col-md-6">
+              <label for="part3MonthSelect" class="form-label-sm">Month page (table)</label>
+              <select id="part3MonthSelect" class="form-select form-select-dashboard" onchange="onPart3MonthChange(this.value)">
+              </select>
+            </div>
+            <div class="col-lg-6 col-12">
+              <label class="form-label-sm d-block">Compare tags (right axis)</label>
+              <div class="compare-tags-card">
+                <div class="compare-tags-toolbar">
+                  <span class="compare-tags-hint text-muted">Ctrl/Cmd + click for multiple</span>
+                  <button type="button" class="btn btn-compare-clear btn-sm" onclick="clearPart3Compare()">Clear all</button>
+                </div>
+                <select id="part3CompareSelect" class="compare-tags-select" multiple size="5" onchange="onPart3CompareChange()">
+                </select>
+              </div>
+            </div>
           </div>
-          <div id="part3PlotHint" class="text-muted small mb-2" style="display:none;">Loading plot…</div>
-          <div id="part3PlotHost" class="mb-3" style="min-height: 460px;"></div>
+          <div id="part3PlotHint" class="plot-status-hint text-muted small mb-2" style="display:none;">Loading plot…</div>
+          <div class="chart-surface mb-4">
+            <div id="part3PlotHost" class="plot-host" style="min-height: 520px;"></div>
+          </div>
 
+          <div class="part3-data-tables">
           {% for t in part3.tag_summaries %}
             {% set tag_idx = loop.index0 %}
             {% set pages = part3.monthly_pages_by_tag[t.tag] %}
-            <div class="drift-tag-panel" id="drift_tag_{{ tag_idx }}" data-default-month="{% if pages|length > 0 %}{{ pages[0].month }}{% endif %}" style="{% if not loop.first %}display:none;{% endif %}">
-              {% if pages|length > 0 %}
-              <div class="row mb-2">
-                <div class="col-4">
-                  <label>Month Page</label>
-                  <select class="form-select" onchange="showDriftMonth('{{ tag_idx }}', this.value)">
-                    {% for p in pages %}
-                      <option value="{{ p.month }}">{{ p.month }}</option>
-                    {% endfor %}
-                  </select>
-                </div>
-              </div>
-              {% endif %}
-
+            <div class="drift-tag-panel" id="drift_tag_{{ tag_idx }}" style="{% if not loop.first %}display:none;{% endif %}">
               {% for p in pages %}
-              <div class="drift-month-panel" data-tag-index="{{ tag_idx }}" data-month="{{ p.month }}" style="{% if not loop.first %}display:none;{% endif %}">
-                <div class="table-responsive mb-3">
-                  <table class="table table-sm table-striped">
+              <div class="drift-month-panel" data-tag-index="{{ tag_idx }}" data-month="{{ p.month }}" data-first-month="{% if loop.first %}1{% else %}0{% endif %}" style="{% if not loop.first %}display:none;{% endif %}">
+                <div class="table-responsive table-dashboard-wrap mb-3">
+                  <table class="table table-dashboard table-sm mb-0">
                     <thead>
                       <tr>
                         <th>Timestamp</th>
@@ -376,9 +489,9 @@
                 </div>
               </div>
               {% endfor %}
-              <hr>
             </div>
           {% endfor %}
+          </div>
         {% endif %}
       </div>
       {% endif %}

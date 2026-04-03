@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
@@ -18,6 +19,49 @@ _STATUS_MARKER_COLORS = {
     "isolation_outlier": "#0284c7",
 }
 
+_COMPARE_LINE_COLORS = ["#2563eb", "#16a34a", "#a855f7", "#ea580c", "#0d9488", "#7c3aed", "#ca8a04"]
+
+_DASH_FONT = "Segoe UI, system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif"
+
+
+def _short_label(name: str, max_len: int = 36) -> str:
+    s = str(name).strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 1] + "…"
+
+
+def _padded_numeric_range(*series: pd.Series, pad_ratio: float = 0.06) -> Optional[Tuple[float, float]]:
+    """Min/max across one or more numeric series with symmetric padding (skips NaN)."""
+    chunks = []
+    for s in series:
+        v = pd.to_numeric(s, errors="coerce").to_numpy(dtype=float, copy=False)
+        v = v[np.isfinite(v)]
+        if v.size:
+            chunks.append(v)
+    if not chunks:
+        return None
+    all_v = np.concatenate(chunks)
+    lo, hi = float(np.min(all_v)), float(np.max(all_v))
+    if lo == hi:
+        span = abs(lo) * 0.05 + 1.0
+        return lo - span, hi + span
+    span = hi - lo
+    pad = pad_ratio * span
+    return lo - pad, hi + pad
+
+
+def _timestamp_range(*series: pd.Series) -> Optional[Tuple[pd.Timestamp, pd.Timestamp]]:
+    ends: List[pd.Timestamp] = []
+    for s in series:
+        t = pd.to_datetime(s, errors="coerce")
+        t = t[t.notna()]
+        if len(t):
+            ends.extend([t.min(), t.max()])
+    if not ends:
+        return None
+    return min(ends), max(ends)
+
 
 def _build_full_tag_plot(
     df_for_script: pd.DataFrame,
@@ -25,22 +69,46 @@ def _build_full_tag_plot(
     tag_result_rows: pd.DataFrame,
     *,
     drift_time: pd.Timestamp | None,
+    compare_tags: Optional[Sequence[str]] = None,
 ) -> go.Figure:
-    """Full time series as line; non-normal points as colored markers by status."""
+    """
+    Primary tag + drift markers on the left y-axis.
+    Compare tags use a separate right y-axis so different engineering units scale correctly.
+    """
     ts = safe_parse_datetime_series(df_for_script["Timestamp"])
-    y = pd.to_numeric(df_for_script[tag], errors="coerce")
+    y_primary = pd.to_numeric(df_for_script[tag], errors="coerce")
+
+    raw_compare = [str(c) for c in (compare_tags or []) if c and str(c) != str(tag)]
+    valid_compare = [ct for ct in raw_compare if ct in df_for_script.columns]
 
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
             x=ts,
-            y=y,
+            y=y_primary,
             mode="lines",
-            name=str(tag),
-            line=dict(color="#94a3b8", width=1.5),
+            name=_short_label(tag) + " (primary)",
+            line=dict(color="#b5171e", width=2.4),
             connectgaps=False,
+            yaxis="y",
         )
     )
+
+    for i, ct in enumerate(valid_compare):
+        yc = pd.to_numeric(df_for_script[ct], errors="coerce")
+        color = _COMPARE_LINE_COLORS[i % len(_COMPARE_LINE_COLORS)]
+        fig.add_trace(
+            go.Scatter(
+                x=ts,
+                y=yc,
+                mode="lines",
+                name=_short_label(ct),
+                line=dict(color=color, width=2, dash="solid"),
+                connectgaps=False,
+                opacity=0.92,
+                yaxis="y2",
+            )
+        )
 
     sub = tag_result_rows.copy()
     sub["Timestamp"] = safe_parse_datetime_series(sub["Timestamp"])
@@ -57,23 +125,118 @@ def _build_full_tag_plot(
                 y=grp["Value"],
                 mode="markers",
                 name=str(status),
-                marker=dict(size=9, color=color, line=dict(width=0)),
+                marker=dict(size=8, color=color, line=dict(width=0)),
+                yaxis="y",
             )
         )
 
     if drift_time is not None and pd.notna(drift_time):
-        fig.add_vline(x=drift_time, line_width=2, line_dash="dash", line_color="#d61f26")
+        fig.add_vline(x=drift_time, line_width=2, line_dash="dash", line_color="#b5171e", opacity=0.85)
 
-    fig.update_layout(
-        title=f"Drift view (full series): {tag}",
-        xaxis_title="Timestamp",
-        yaxis_title="Value",
-        template="plotly_white",
-        height=460,
-        margin=dict(l=40, r=20, t=60, b=40),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    # Ranges from actual finite data
+    primary_for_range = [y_primary]
+    for st, grp in sub.groupby("Status", dropna=False):
+        if st in ("normal", "missing") or pd.isna(st):
+            continue
+        g = grp.dropna(subset=["Value"])
+        if not g.empty:
+            primary_for_range.append(pd.to_numeric(g["Value"], errors="coerce"))
+    rng_y = _padded_numeric_range(*primary_for_range)
+
+    compare_series = [pd.to_numeric(df_for_script[ct], errors="coerce") for ct in valid_compare]
+    rng_y2 = _padded_numeric_range(*compare_series) if compare_series else None
+
+    if len(sub):
+        tr = _timestamp_range(ts, sub["Timestamp"])
+    else:
+        tr = _timestamp_range(ts)
+    if tr is None:
+        tr = _timestamp_range(ts)
+
+    title_main = "Time series"
+    title_sub = _short_label(tag, 48)
+    if valid_compare:
+        title_sub += " · vs " + ", ".join(_short_label(c, 24) for c in valid_compare[:3])
+        if len(valid_compare) > 3:
+            title_sub += "…"
+
+    layout_kwargs: dict = dict(
+        title=dict(
+            text=f"<b>{title_main}</b><br><span style='font-size:13px;font-weight:500;color:#64748b'>{title_sub}</span>",
+            font=dict(family=_DASH_FONT, size=16, color="#0f172a"),
+            x=0.01,
+            xanchor="left",
+            y=0.97,
+            yanchor="top",
+        ),
+        font=dict(family=_DASH_FONT, size=12, color="#334155"),
+        paper_bgcolor="#f8fafc",
+        plot_bgcolor="#ffffff",
+        height=520,
+        margin=dict(l=72, r=72, t=92, b=120),
+        hovermode="x unified",
+        hoverlabel=dict(bgcolor="white", font_size=12, font_family=_DASH_FONT),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.28,
+            xanchor="center",
+            x=0.5,
+            bgcolor="rgba(255,255,255,0.92)",
+            bordercolor="#e2e8f0",
+            borderwidth=1,
+            font=dict(size=11),
+        ),
+        xaxis=dict(
+            title=dict(text="Time", font=dict(size=12, color="#64748b")),
+            showgrid=True,
+            gridcolor="#e2e8f0",
+            zeroline=False,
+            linecolor="#cbd5e1",
+            mirror=True,
+            tickformat="%m/%d/%Y",
+            hoverformat="%m/%d/%Y",
+            automargin=True,
+        ),
+        yaxis=dict(
+            title=dict(text=_short_label(tag, 32) + " (left)", font=dict(size=12, color="#b5171e")),
+            showgrid=True,
+            gridcolor="#e2e8f0",
+            zeroline=False,
+            linecolor="#cbd5e1",
+            mirror=True,
+            side="left",
+            automargin=True,
+            color="#b5171e",
+        ),
     )
-    fig.update_xaxes(tickformat="%m/%d/%Y", hoverformat="%m/%d/%Y")
+
+    if valid_compare:
+        layout_kwargs["yaxis2"] = dict(
+            title=dict(
+                text="Compare tags (right scale)" if len(valid_compare) > 1 else _short_label(valid_compare[0], 28) + " (right)",
+                font=dict(size=12, color="#2563eb"),
+            ),
+            overlaying="y",
+            side="right",
+            showgrid=False,
+            zeroline=False,
+            linecolor="#cbd5e1",
+            mirror=True,
+            automargin=True,
+            color="#2563eb",
+        )
+
+    if rng_y is not None:
+        layout_kwargs["yaxis"] = {**layout_kwargs["yaxis"], "range": list(rng_y)}
+    if valid_compare and rng_y2 is not None:
+        layout_kwargs["yaxis2"] = {**layout_kwargs["yaxis2"], "range": list(rng_y2)}
+
+    fig.update_layout(**layout_kwargs)
+
+    if tr is not None:
+        fig.update_xaxes(range=[tr[0], tr[1]])
+
     return fig
 
 
@@ -81,8 +244,10 @@ def build_plot_figure_for_tag(
     df_for_script: pd.DataFrame,
     out_df: pd.DataFrame,
     tag: str,
+    *,
+    compare_tags: Optional[Sequence[str]] = None,
 ) -> go.Figure:
-    """Build the Part 3 Plotly figure for one tag (full series + markers)."""
+    """Build the Part 3 Plotly figure for one primary tag (full series + markers) and optional compare lines."""
     tag = str(tag)
     if tag not in df_for_script.columns:
         raise ValueError(f"Unknown tag: {tag}")
@@ -96,6 +261,7 @@ def build_plot_figure_for_tag(
         tag,
         all_tag_rows,
         drift_time=drift_time if drift_time is not None and pd.notna(drift_time) else None,
+        compare_tags=compare_tags,
     )
 
 
