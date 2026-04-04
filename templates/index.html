@@ -38,9 +38,8 @@
     <aside class="sidebar">
       <div class="sidebar-title">Anomaly Dashboard</div>
       <nav class="sidebar-nav">
-        <a class="sidebar-link {% if active_tab == 'part1' %}active{% endif %}" href="{{ url_for('index', tab='part1') }}">Part 1: Outliers</a>
-        <a class="sidebar-link {% if active_tab == 'part2' %}active{% endif %}" href="{{ url_for('index', tab='part2') }}">Part 2: Drift & Causes</a>
-        <a class="sidebar-link {% if active_tab == 'part3' %}active{% endif %}" href="{{ url_for('index', tab='part3') }}">Part 3: Drift Detection</a>
+        <a class="sidebar-link {% if active_tab == 'part2' %}active{% endif %}" href="{{ url_for('main.index', tab='part2') }}">Anomaly detection</a>
+        <a class="sidebar-link {% if active_tab == 'part3' %}active{% endif %}" href="{{ url_for('main.index', tab='part3') }}">Outlier Detection</a>
       </nav>
       <div class="sidebar-help text-muted">
         Upload XLSX files to run detection.
@@ -49,100 +48,65 @@
 
     <main class="main">
       <h1 class="mb-3">
-        {% if active_tab == 'part1' %}Part 1: Outlier (Tag Alerts)
-        {% elif active_tab == 'part2' %}Part 2: Drift → Children → Top 10 Causes
-        {% else %}Part 3: Drift Detection{% endif %}
+        {% if active_tab == 'part2' %}Anomaly detection
+        {% else %}Outlier Detection{% endif %}
       </h1>
-
-      {% if active_tab == 'part1' %}
-        <div class="card">
-          <form action="{{ url_for('part1_outliers') }}" method="post" enctype="multipart/form-data" class="mb-4">
-            <div class="row">
-              <div class="col">
-                <label>Upload XLSX (wide format)</label>
-                <input class="form-control" type="file" name="anomaly_xlsx" accept=".xlsx" required>
-              </div>
-              <div class="col-3">
-                <label>Robust Z threshold</label>
-                <input class="form-control" type="number" name="robust_z_threshold" value="3.5" step="0.1" min="0" required>
-              </div>
-              <div class="col-3">
-                <label>Plot tag (optional)</label>
-                <input class="form-control" type="text" name="plot_tag" placeholder="e.g., TagName">
-              </div>
-            </div>
-            <div class="mt-3">
-              <button class="btn btn-primary" type="submit">Detect Outliers</button>
-            </div>
-          </form>
-          <div class="text-muted small">
-            Expected format: first column is timestamp; remaining columns are numeric tags.
-            This dashboard will display timestamps using base date `2024-01-01`.
-          </div>
-        </div>
-      {% endif %}
 
       {% if active_tab == 'part2' %}
         <div class="card">
-          <form action="{{ url_for('part2_drift_causes') }}" method="post" enctype="multipart/form-data">
+          <form action="{{ url_for('main.part2_drift_causes') }}" method="post" enctype="multipart/form-data">
             <div class="row">
               <div class="col">
                 <label>Upload Causal Model XLSX</label>
                 <input class="form-control" type="file" name="causal_model_xlsx" accept=".xlsx" required>
               </div>
               <div class="col">
-                <label>Upload Time-Series XLSX</label>
+                <label>Upload Time-Series XLSX (wide format, same as multi-X multi-Y)</label>
                 <input class="form-control" type="file" name="time_series_xlsx" accept=".xlsx" required>
               </div>
             </div>
 
             <div class="row mt-3">
-              <div class="col-3">
-                <label>Target tag</label>
-                <input class="form-control" type="text" name="target_col" value="C2_Splitter_DP" required>
-              </div>
-              <div class="col-3">
+              <div class="col-md-4">
                 <label>Historic ratio</label>
                 <input class="form-control" type="number" name="historic_ratio" value="0.70" step="0.01" min="0.1" max="0.9" required>
               </div>
-              <div class="col-3">
-                <label>Top K drift tags</label>
-                <input class="form-control" type="number" name="top_k_drift" value="10" min="1" max="200" required>
+              <div class="col-md-4">
+                <label>Lookback months (data window)</label>
+                <input class="form-control" type="number" name="lookback_months" value="2" min="1" max="60" required>
               </div>
-              <div class="col-3">
-                <label>Show plots</label>
-                <div class="d-flex align-items-center" style="gap: 10px;">
-                  <input class="form-check-input" type="checkbox" name="show_plots" value="1">
-                  <span class="text-muted small">Optional (slower)</span>
-                </div>
+              <div class="col-md-4">
+                <label>Top drift tags (dropdown)</label>
+                <input class="form-control" type="number" name="top_k_drift" value="10" min="1" max="50" required>
               </div>
             </div>
 
             <div class="mt-3">
-              <button class="btn btn-success" type="submit">Detect Drift & Causes</button>
+              <button class="btn btn-success" type="submit">Run Detail_Pipeline analysis</button>
             </div>
           </form>
           <div class="text-muted small mt-2">
-            Causal model expected sheet: <code>Chain_Matrix_Exhaustive</code> and a column containing propagation paths.
+            Causal file: sheet <code>Chain_Matrix_Exhaustive</code> with a <strong>Propagation Path</strong> column (e.g. yanpet olefin causal model).
+            Each top drift tag is analysed with <code>Detail_Pipeline.py</code>; pick a tag in results to see tables and the smoothed-series plot.
           </div>
         </div>
       {% endif %}
 
       {% if active_tab == 'part3' %}
         <div class="card">
-          <form action="{{ url_for('part3_drift_detection') }}" method="post" enctype="multipart/form-data">
+          <form action="{{ url_for('main.part3_drift_detection') }}" method="post" enctype="multipart/form-data">
             <div class="row">
               <div class="col">
-                <label>Upload XLSX for Drift Detection</label>
+                <label>Upload XLSX for outlier / drift-style detection</label>
                 <input class="form-control" type="file" name="drift_xlsx" accept=".xlsx" required>
               </div>
             </div>
             <div class="mt-3">
-              <button class="btn btn-primary" type="submit">Run Drift Detection</button>
+              <button class="btn btn-primary" type="submit">Run Outlier Detection</button>
             </div>
           </form>
           <div class="text-muted small mt-2">
-            Output will show only drifted tags in a dropdown, with status, drift timestamp, and a one-month lookback plot.
+            Output lists drifted tags in a dropdown with status, timestamps, and a lookback plot.
           </div>
         </div>
       {% endif %}
@@ -154,4 +118,3 @@
   </div>
 </body>
 </html>
-

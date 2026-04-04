@@ -20,6 +20,113 @@
       el.style.display = isHidden ? "block" : "none";
     }
 
+    async function showPart2Tag(tag) {
+      const block = document.getElementById("part2DetailBlock");
+      const tbody = document.getElementById("part2RootsTableBody");
+      const hintRoots = document.getElementById("part2RootsHint");
+      const rid = window.__part2ResultId || "";
+
+      if (block) block.style.display = "block";
+      if (tbody) tbody.innerHTML = "";
+      if (hintRoots) {
+        hintRoots.textContent = "Loading top 10 root causes…";
+        hintRoots.style.display = "block";
+      }
+
+      if (!tag || !rid) {
+        if (hintRoots) {
+          hintRoots.textContent = "Missing session or tag.";
+          hintRoots.style.display = "block";
+        }
+        return;
+      }
+
+      try {
+        const res = await fetch(
+          "/api/part2/roots/" + encodeURIComponent(rid) + "?tag=" + encodeURIComponent(tag)
+        );
+        if (!res.ok) {
+          const err = await res.json().catch(function () { return {}; });
+          throw new Error(err.error || res.statusText);
+        }
+        const data = await res.json();
+        const rows = data.rows || [];
+        if (hintRoots) hintRoots.style.display = "none";
+        if (tbody) {
+          if (rows.length === 0) {
+            const tr = document.createElement("tr");
+            const td = document.createElement("td");
+            td.className = "text-muted";
+            td.colSpan = 3;
+            td.textContent = "No root-cause rows returned for this target.";
+            tr.appendChild(td);
+            tbody.appendChild(tr);
+          } else {
+            rows.forEach(function (r) {
+              const tr = document.createElement("tr");
+              ["root_cause", "root_cause_score", "propagation_path"].forEach(function (k) {
+                const td = document.createElement("td");
+                const v = r[k];
+                td.textContent = v === null || v === undefined ? "" : String(v);
+                if (k === "propagation_path") td.className = "small";
+                tr.appendChild(td);
+              });
+              tbody.appendChild(tr);
+            });
+          }
+        }
+      } catch (e) {
+        if (hintRoots) {
+          hintRoots.textContent = "Root causes: " + (e && e.message ? e.message : e);
+          hintRoots.style.display = "block";
+        }
+      }
+
+      loadPart2Plot(tag);
+    }
+
+    async function loadPart2Plot(tag) {
+      const rid = window.__part2ResultId || "";
+      const host = document.getElementById("part2PlotHost");
+      const hint = document.getElementById("part2PlotHint");
+      if (!host || !tag || !rid) {
+        if (hint) {
+          hint.textContent = "Missing session or tag.";
+          hint.style.display = "block";
+        }
+        return;
+      }
+      if (hint) {
+        hint.textContent = "Loading plot…";
+        hint.style.display = "block";
+      }
+      try {
+        const res = await fetch(
+          "/api/part2/plot/" + encodeURIComponent(rid) + "?tag=" + encodeURIComponent(tag)
+        );
+        if (!res.ok) {
+          const err = await res.json().catch(function () { return {}; });
+          throw new Error(err.error || res.statusText);
+        }
+        const fig = await res.json();
+        if (typeof Plotly !== "undefined" && Plotly.purge) {
+          Plotly.purge(host);
+        }
+        Plotly.newPlot(host, fig.data, fig.layout, {
+          responsive: true,
+          displaylogo: false,
+          modeBarButtonsToRemove: ["lasso2d", "select2d"],
+          toImageButtonOptions: { format: "png", filename: "part2_drift_tag", scale: 2 },
+        });
+        if (hint) hint.style.display = "none";
+      } catch (e) {
+        if (hint) {
+          hint.textContent = "Could not load plot: " + (e && e.message ? e.message : e);
+          hint.style.display = "block";
+        }
+      }
+    }
+
     function syncPart3CompareOptions(primaryTagName) {
       const all = window.__part3AllTags || [];
       const sel = document.getElementById("part3CompareSelect");
@@ -163,6 +270,24 @@
     }
 
     document.addEventListener("DOMContentLoaded", function () {
+      const p2 = document.getElementById("part2-config");
+      if (p2) {
+        try {
+          const cfg = JSON.parse(p2.textContent);
+          window.__part2ResultId = cfg.resultId || "";
+          const sel = document.getElementById("part2PrimaryTag");
+          const tags = cfg.tags || [];
+          if (sel && tags.length > 0) {
+            showPart2Tag(tags[0]);
+          } else if (sel) {
+            const block = document.getElementById("part2DetailBlock");
+            if (block) block.style.display = "none";
+          }
+        } catch (err) {
+          console.error("part2-config parse error", err);
+        }
+      }
+
       const raw = document.getElementById("part3-config");
       if (!raw) return;
       try {
@@ -179,7 +304,7 @@
         console.error("part3-config parse error", err);
         const hint = document.getElementById("part3PlotHint");
         if (hint) {
-          hint.textContent = "Could not load Part 3 configuration.";
+          hint.textContent = "Could not load Outlier Detection configuration.";
           hint.style.display = "block";
         }
       }
@@ -197,9 +322,8 @@
     <aside class="sidebar">
       <div class="sidebar-title">Anomaly Dashboard</div>
       <nav class="sidebar-nav">
-        <a class="sidebar-link {% if active_tab == 'part1' %}active{% endif %}" href="{{ url_for('index', tab='part1') }}">Part 1: Outliers</a>
-        <a class="sidebar-link {% if active_tab == 'part2' %}active{% endif %}" href="{{ url_for('index', tab='part2') }}">Part 2: Drift & Causes</a>
-        <a class="sidebar-link {% if active_tab == 'part3' %}active{% endif %}" href="{{ url_for('index', tab='part3') }}">Part 3: Drift Detection</a>
+        <a class="sidebar-link {% if active_tab == 'part2' %}active{% endif %}" href="{{ url_for('main.index', tab='part2') }}">Anomaly detection</a>
+        <a class="sidebar-link {% if active_tab == 'part3' %}active{% endif %}" href="{{ url_for('main.index', tab='part3') }}">Outlier Detection</a>
       </nav>
       <div class="sidebar-help text-muted">
         Results for the latest run.
@@ -211,126 +335,47 @@
         <h1 style="font-size: 22px; margin: 0;">Dashboard Results</h1>
       </div>
 
-      {% if part1 %}
-      <div class="card">
-        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Part 1: Outlier Alerts</h2>
-        <div class="mb-2 text-muted">
-          Outlier threshold: <code>{{ part1.robust_z_threshold }}</code>
-        </div>
-
-        <div class="mb-3">
-          Plot tag status:
-          <strong>{{ part1.plot_tag_used }}</strong>
-          -> Is outlier: <strong>{{ "Yes" if part1.plot_tag_is_outlier else "No" }}</strong>
-          {% if part1.plot_tag_is_outlier %}
-            (first outlier: {{ part1.plot_tag_first_outlier_timestamp }}, flags: {{ part1.plot_tag_num_flags }})
-          {% endif %}
-        </div>
-
-        <h3 style="font-size: 15px;">Top Tag Status (by #flags)</h3>
-        {% if part1.status_rows|length == 0 %}
-          <div class="text-muted">No tag status available.</div>
-        {% else %}
-          <div class="table-responsive mb-2">
-            <table class="table table-sm table-striped">
-              <thead>
-                <tr>
-                  <th>Tag</th>
-                  <th>Is Outlier</th>
-                  <th>First Outlier Timestamp</th>
-                  <th># Flags</th>
-                </tr>
-              </thead>
-              <tbody>
-              {% for r in part1.status_rows %}
-                <tr>
-                  <td><code>{{ r.tag }}</code></td>
-                  <td>{{ "Yes" if r.is_outlier else "No" }}</td>
-                  <td>{{ r.first_outlier_timestamp }}</td>
-                  <td>{{ r.num_flags }}</td>
-                </tr>
-              {% endfor %}
-              </tbody>
-            </table>
-          </div>
-          {% if part1.status_truncated %}
-            <div class="text-muted small">Showing first {{ part1.status_max_rows }} tag statuses.</div>
-          {% endif %}
-        {% endif %}
-
-        <h3 style="font-size: 15px;">Flagged Rows</h3>
-        {% if part1.flags_count == 0 %}
-          <div class="text-muted">No outliers detected.</div>
-        {% else %}
-          <div class="table-responsive">
-            <table class="table table-sm table-striped">
-              <thead>
-                <tr>
-                  <th>Tag</th>
-                  <th>Timestamp</th>
-                  <th>Value</th>
-                  <th>Robust Z</th>
-                </tr>
-              </thead>
-              <tbody>
-              {% for r in part1.flags_rows %}
-                <tr>
-                  <td><code>{{ r.tag }}</code></td>
-                  <td>{{ r.timestamp }}</td>
-                  <td>{{ r.value }}</td>
-                  <td>{{ r.robust_z }}</td>
-                </tr>
-              {% endfor %}
-              </tbody>
-            </table>
-          </div>
-          {% if part1.flags_truncated %}
-            <div class="text-muted small">Showing first {{ part1.flags_max_rows }} flagged rows.</div>
-          {% endif %}
-        {% endif %}
-
-        <hr>
-
-        <h3 style="font-size: 15px;">Plot ({{ part1.plot_tag_used }})</h3>
-        <div>
-          {{ part1.plot_html | safe }}
-        </div>
-      </div>
-      {% endif %}
-
       {% if part2 %}
-      <div class="card">
-        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Part 2: Drift → Children → Top 10 Causes</h2>
+      <div class="card part2-card">
+        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Anomaly detection</h2>
+        <p class="text-muted small">Causal graph from <code>Chain_Matrix_Exhaustive</code> propagation paths. Top drift tags use the same scoring as <code>Detail_Pipeline.py</code>.</p>
 
-        <h3 style="font-size: 15px;">Top Drift Tags</h3>
-        {% if part2.top_drift_tags|length == 0 %}
-          <div class="text-muted">No drift tags found.</div>
+        <script type="application/json" id="part2-config">{{ part2.client_config_json | safe }}</script>
+
+        <h3 style="font-size: 15px;">Run summary</h3>
+        {% if part2.summary %}
+          <div class="table-responsive mb-3">
+            <table class="table table-sm table-bordered">
+              <tbody>
+              {% for k, v in part2.summary.items() %}
+                <tr>
+                  <th scope="row" style="width: 280px;">{{ k }}</th>
+                  <td>{{ v }}</td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% endif %}
+
+        <h3 style="font-size: 15px;">Top drift tags</h3>
+        <p class="text-muted small">Upload finishes after drift scoring only. Pick a tag below to run the root-cause model (may take a minute).</p>
+        {% if part2.top_drift_rows|length == 0 %}
+          <div class="text-muted mb-3">No drift tags in the selected window.</div>
         {% else %}
-          <div class="table-responsive">
+          <div class="table-responsive mb-3">
             <table class="table table-sm table-striped">
               <thead>
                 <tr>
                   <th>Tag</th>
-                  <th>Drift Flag</th>
-                  <th>Drift Time</th>
-                  <th>Mean Shift</th>
-                  <th>Std Shift</th>
-                  <th>KS Stat</th>
-                  <th>P-Value</th>
-                  <th>Magnitude</th>
+                  <th>Drift score</th>
                 </tr>
               </thead>
               <tbody>
-              {% for r in part2.top_drift_tags %}
+              {% for r in part2.top_drift_rows %}
                 <tr>
-                  <td><code>{{ r.X_Tag }}</code></td>
-                  <td>{{ r.X_Drift_Flag }}</td>
-                  <td>{{ r.X_Drift_Time }}</td>
-                  <td>{{ r.Mean_Shift }}</td>
-                  <td>{{ r.Std_Shift }}</td>
-                  <td>{{ r.KS_Stat }}</td>
-                  <td>{{ r.p_value }}</td>
-                  <td>{{ r.Drift_Magnitude }}</td>
+                  <td><code>{{ r.Tag }}</code></td>
+                  <td>{{ r.Drift_Score }}</td>
                 </tr>
               {% endfor %}
               </tbody>
@@ -339,82 +384,45 @@
         {% endif %}
 
         <hr>
-
-        <h3 style="font-size: 15px;">Discovered Child Nodes</h3>
-        {% if part2.children_set|length == 0 %}
-          <div class="text-muted">No child nodes discovered from propagation paths.</div>
-        {% else %}
-          <div class="mb-2">
-            <div class="text-muted small">From top drift tags, we found these children (used as candidate causes for Pipeline.py).</div>
+        <h3 style="font-size: 15px;">Select a drift tag</h3>
+        <div class="row mb-3 g-3 align-items-end">
+          <div class="col-md-6">
+            <label for="part2PrimaryTag" class="form-label-sm">Drift target</label>
+            <select id="part2PrimaryTag" class="form-select" onchange="showPart2Tag(this.value);">
+              {% for r in part2.top_drift_rows %}
+                <option value="{{ r.Tag }}">{{ r.Tag }}</option>
+              {% endfor %}
+            </select>
           </div>
-          <div>
-            {% for c in part2.children_set %}
-              <span class="badge text-bg-primary me-1 mb-1"><code>{{ c }}</code></span>
-            {% endfor %}
-          </div>
-        {% endif %}
+        </div>
+        <div id="part2PlotHint" class="text-muted small mb-2" style="display:none;">Loading plot…</div>
+        <div class="chart-surface mb-4">
+          <div id="part2PlotHost" class="plot-host" style="min-height: 440px;"></div>
+        </div>
 
-        <hr>
-
-        <h3 style="font-size: 15px;">Top 10 Root Causes (with Reasons)</h3>
-        {% if part2.top_causes|length == 0 %}
-          <div class="text-muted">No causes returned by the root-cause model.</div>
-        {% else %}
-          <div class="table-responsive">
-            <table class="table table-sm table-bordered">
+        <div id="part2DetailBlock">
+          <div id="part2RootsHint" class="text-muted small mb-2" style="display:none;"></div>
+          <h4 style="font-size: 14px;">Top 10 root causes (with propagation path)</h4>
+          <div class="table-responsive mb-3">
+            <table class="table table-sm table-striped">
               <thead>
                 <tr>
-                  <th>Cause</th>
-                  <th>Type</th>
-                  <th>Root Score</th>
-                  <th>Drift Time</th>
-                  <th>Evidence Summary</th>
+                  <th>Root cause</th>
+                  <th>Root cause score</th>
+                  <th>Propagation path</th>
                 </tr>
               </thead>
-              <tbody>
-              {% for c in part2.top_causes %}
-                <tr>
-                  <td><code>{{ c.cause_tag }}</code></td>
-                  <td>{{ c.cause_type }}</td>
-                  <td>{{ c.root_cause_score }}</td>
-                  <td>{{ c.x_drift_time }}</td>
-                  <td>
-                    <details>
-                      <summary>Reason</summary>
-                      <div class="small" style="white-space: pre-wrap;">{{ c.reason }}</div>
-                    </details>
-                    {% if c.plot_html %}
-                      <div class="mt-2">
-                        <button class="btn btn-sm btn-outline-primary" type="button" onclick="togglePlot('cause_plot_{{ loop.index0 }}')">
-                          Show Plot
-                        </button>
-                      </div>
-                      <div id="cause_plot_{{ loop.index0 }}" style="display:none; margin-top: 10px;">
-                        {{ c.plot_html | safe }}
-                      </div>
-                    {% endif %}
-                  </td>
-                </tr>
-              {% endfor %}
-              </tbody>
+              <tbody id="part2RootsTableBody"></tbody>
             </table>
           </div>
-        {% endif %}
-
-        {% if part2.plot_html %}
-          <hr>
-          <h3 style="font-size: 15px;">Plot (Drift Tag vs Timeline)</h3>
-          <div>
-            {{ part2.plot_html | safe }}
-          </div>
-        {% endif %}
+        </div>
       </div>
       {% endif %}
 
       {% if part3 %}
       <div class="card part3-card">
         <div class="dashboard-section-head">
-          <h2 class="dashboard-section-title">Part 3 · Drift detection</h2>
+          <h2 class="dashboard-section-title">Outlier Detection</h2>
           <p class="dashboard-section-sub text-muted">Primary tag uses the left axis; compare tags use an independent right axis so different units stay readable.</p>
         </div>
         {% if part3.tag_summaries|length == 0 %}
