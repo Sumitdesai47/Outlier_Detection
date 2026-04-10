@@ -1,0 +1,20 @@
+# Optional: MySQL in Docker only if you do NOT use a local MySQL install.
+# Most setups: install MySQL on the host, create database `anomaly`, set DATABASE_URL in .env — see db/MYSQL.md
+# Start container: docker compose up -d
+# Example URL when using this file: mysql://anomaly:anomaly@127.0.0.1:3306/anomaly
+services:
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: anomaly
+      MYSQL_USER: anomaly
+      MYSQL_PASSWORD: anomaly
+      MYSQL_ROOT_PASSWORD: rootdev
+    ports:
+      - "3306:3306"
+    volumes:
+      - anomaly_mysqldata:/var/lib/mysql
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+
+volumes:
+  anomaly_mysqldata:

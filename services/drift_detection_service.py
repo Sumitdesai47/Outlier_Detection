@@ -289,6 +289,13 @@ def run_drift_detection_on_xlsx(file_path: str) -> dict:
         timestamp_base_datetime=None,
         timestamp_unit="D",
     )
+    return run_drift_detection_on_wide_df(df)
+
+
+def run_drift_detection_on_wide_df(df: pd.DataFrame) -> dict:
+    """
+    Run Drift_detection.py using an already prepared wide DataFrame with Timestamp + tag columns.
+    """
     if "Timestamp" not in df.columns:
         raise ValueError("Timestamp column not found after parsing uploaded file.")
 
@@ -298,11 +305,7 @@ def run_drift_detection_on_xlsx(file_path: str) -> dict:
 
     # Prefer true datetime parsing from uploaded values (avoid forced 2024 base behavior).
     parsed_ts = safe_parse_datetime_series(df_for_script["Timestamp"])
-    raw_ts = (
-        safe_parse_datetime_series(df.get("Timestamp_raw"))
-        if "Timestamp_raw" in df.columns
-        else pd.Series(dtype="datetime64[ns]")
-    )
+    raw_ts = safe_parse_datetime_series(df.get("Timestamp_raw")) if "Timestamp_raw" in df.columns else pd.Series(dtype="datetime64[ns]")
 
     if parsed_ts.notna().sum() == 0 and len(raw_ts) > 0 and raw_ts.notna().sum() > 0:
         df_for_script["Timestamp"] = raw_ts

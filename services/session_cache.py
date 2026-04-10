@@ -14,8 +14,8 @@ def part3_cache_file(result_id: str) -> str:
     return os.path.join(tempfile.gettempdir(), f"anomaly_pt3_{result_id}.pkl")
 
 
-def part3_store(result_id: str, df_for_script: Any, out_df: Any) -> None:
-    ctx = {"df_for_script": df_for_script, "out_df": out_df}
+def part3_store(result_id: str, df_for_script: Any, out_df: Any, export_payload: Any = None) -> None:
+    ctx = {"df_for_script": df_for_script, "out_df": out_df, "export_payload": export_payload}
     _PART3_CACHE[result_id] = ctx
     try:
         with open(part3_cache_file(result_id), "wb") as f:

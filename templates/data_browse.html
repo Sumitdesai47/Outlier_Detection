@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Uploaded data</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Process Intelligence</div>
+      <nav class="sidebar-nav">
+        <a class="sidebar-link {% if request.endpoint == 'main.overview_dashboard' %}active{% endif %}" href="{{ url_for('main.overview_dashboard') }}">Dashboard</a>
+        {% if database_enabled %}
+        <a class="sidebar-link {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
+        {% endif %}
+        <a class="sidebar-link" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
+        <a class="sidebar-link" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
+        {% if database_enabled %}
+        <a class="sidebar-link {% if request.endpoint in ('main.data_browse', 'main.data_timeseries_detail', 'main.data_causal_detail') %}active{% endif %}" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
+        <a class="sidebar-link {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
+        {% endif %}
+      </nav>
+      <div class="sidebar-help text-muted">
+        Browse uploads and every base table in the app database (50 rows per page).
+      </div>
+    </aside>
+
+    <main class="main">
+      <h1 class="mb-3">Uploaded data</h1>
+
+      {% if not database_enabled %}
+        <div class="alert alert-secondary">
+          MySQL is not configured. Set <code>DATABASE_URL</code> to <code>mysql://...</code> and run <code>python scripts/init_db.py</code>.
+        </div>
+      {% elif db_unreachable|default(false) %}
+        <div class="alert alert-warning">
+          <p class="mb-2"><strong>Cannot connect to MySQL</strong> using <code>DATABASE_URL</code> (check host and port 3306).</p>
+          <p class="small mb-0">Start your local MySQL service, fix <code>DATABASE_URL</code> in <code>.env</code> if needed, run <code>python scripts/init_db.py</code>, then reload. See <code>db/MYSQL.md</code>.</p>
+        </div>
+      {% else %}
+        <ul class="nav nav-tabs mb-3" id="dataTabs" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link {% if tab == 'ts' %}active{% endif %}" id="tab-ts" data-bs-toggle="tab" data-bs-target="#pane-ts" type="button" role="tab">Time-series</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link {% if tab == 'causal' %}active{% endif %}" id="tab-causal" data-bs-toggle="tab" data-bs-target="#pane-causal" type="button" role="tab">Causal</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link {% if tab == 'ts_rows' %}active{% endif %}" id="tab-ts-rows" data-bs-toggle="tab" data-bs-target="#pane-ts-rows" type="button" role="tab">Time-series table</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link {% if tab == 'causal_rows' %}active{% endif %}" id="tab-causal-rows" data-bs-toggle="tab" data-bs-target="#pane-causal-rows" type="button" role="tab">Causal table</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link {% if tab == 'tables' %}active{% endif %}" id="tab-all-tables" data-bs-toggle="tab" data-bs-target="#pane-all-tables" type="button" role="tab">All tables</button>
+          </li>
+        </ul>
+
+        <div class="tab-content">
+          <div class="tab-pane fade {% if tab == 'ts' %}show active{% endif %}" id="pane-ts" role="tabpanel">
+            <p class="text-muted small">Wide time-series uploads (deduplicated by file hash).</p>
+            <div class="table-responsive">
+              <table class="table table-sm table-bordered align-middle">
+                <thead class="table-light">
+                  <tr>
+                    <th>ID</th>
+                    <th>Filename</th>
+                    <th>Uploaded</th>
+                    <th>Rows</th>
+                    <th>Tags</th>
+                    <th>SHA-256 (prefix)</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for r in ts_rows %}
+                  <tr>
+                    <td>{{ r.id }}</td>
+                    <td>{{ r.original_filename }}</td>
+                    <td>{{ r.uploaded_at or "—" }}</td>
+                    <td>{{ r.row_count }}</td>
+                    <td>{{ r.num_tags }}</td>
+                    <td><code class="small">{{ (r.content_sha256 or "")[:16] }}…</code></td>
+                    <td><a href="{{ url_for('main.data_timeseries_detail', dataset_id=r.id) }}">Rows</a></td>
+                  </tr>
+                  {% else %}
+                  <tr><td colspan="7" class="text-muted">No time-series datasets yet.</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% if ts_total > page_size %}
+            <nav class="d-flex align-items-center gap-2" aria-label="Time-series pagination">
+              <span class="text-muted small">Page {{ ts_page }} of {{ ts_total_pages }} ({{ ts_total }} datasets)</span>
+              <ul class="pagination pagination-sm mb-0">
+                {% if ts_page > 1 %}
+                <li class="page-item"><a class="page-link" href="{{ url_for('main.data_browse', tab='ts', ts_page=ts_page - 1, causal_page=causal_page) }}">Previous</a></li>
+                {% endif %}
+                {% if ts_page < ts_total_pages %}
+                <li class="page-item"><a class="page-link" href="{{ url_for('main.data_browse', tab='ts', ts_page=ts_page + 1, causal_page=causal_page) }}">Next</a></li>
+                {% endif %}
+              </ul>
+            </nav>
+            {% endif %}
+          </div>
+
+          <div class="tab-pane fade {% if tab == 'causal' %}show active{% endif %}" id="pane-causal" role="tabpanel">
+            <p class="text-muted small">Causal matrix workbooks (deduplicated by file hash).</p>
+            <div class="table-responsive">
+              <table class="table table-sm table-bordered align-middle">
+                <thead class="table-light">
+                  <tr>
+                    <th>ID</th>
+                    <th>Filename</th>
+                    <th>Uploaded</th>
+                    <th>SHA-256 (prefix)</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for r in causal_rows %}
+                  <tr>
+                    <td>{{ r.id }}</td>
+                    <td>{{ r.original_filename }}</td>
+                    <td>{{ r.uploaded_at or "—" }}</td>
+                    <td><code class="small">{{ (r.content_sha256 or "")[:16] }}…</code></td>
+                    <td><a href="{{ url_for('main.data_causal_detail', dataset_id=r.id) }}">Rows</a></td>
+                  </tr>
+                  {% else %}
+                  <tr><td colspan="5" class="text-muted">No causal datasets yet.</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% if causal_total > page_size %}
+            <nav class="d-flex align-items-center gap-2" aria-label="Causal pagination">
+              <span class="text-muted small">Page {{ causal_page }} of {{ causal_total_pages }} ({{ causal_total }} datasets)</span>
+              <ul class="pagination pagination-sm mb-0">
+                {% if causal_page > 1 %}
+                <li class="page-item"><a class="page-link" href="{{ url_for('main.data_browse', tab='causal', ts_page=ts_page, causal_page=causal_page - 1) }}">Previous</a></li>
+                {% endif %}
+                {% if causal_page < causal_total_pages %}
+                <li class="page-item"><a class="page-link" href="{{ url_for('main.data_browse', tab='causal', ts_page=ts_page, causal_page=causal_page + 1) }}">Next</a></li>
+                {% endif %}
+              </ul>
+            </nav>
+            {% endif %}
+          </div>
+
+          <div class="tab-pane fade {% if tab == 'ts_rows' %}show active{% endif %}" id="pane-ts-rows" role="tabpanel">
+            <p class="text-muted small">
+              All rows from <code>timeseries_observation</code>, 50 per page.
+              <strong>{{ ts_obs_distinct_dataset_count|default(0) }}</strong> unique <code>dataset_id</code> value(s) in this table
+              ({{ ts_data_total|default(0) }} observation row(s) total).
+            </p>
+            <div class="table-responsive">
+              <table class="table table-sm table-bordered align-middle">
+                <thead class="table-light">
+                  <tr>
+                    <th>Dataset ID</th>
+                    <th>Row</th>
+                    <th>Timestamp</th>
+                    <th>Raw TS</th>
+                    <th>Tag</th>
+                    <th>Value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for r in ts_data_rows %}
+                  <tr>
+                    <td>{{ r.dataset_id }}</td>
+                    <td>{{ r.row_index }}</td>
+                    <td>{{ r.observed_at or "—" }}</td>
+                    <td>{{ r.observed_at_raw or "—" }}</td>
+                    <td>{{ r.tag_name }}</td>
+                    <td>{{ r.value if r.value is not none else "—" }}</td>
+                  </tr>
+                  {% else %}
+                  <tr><td colspan="6" class="text-muted">No time-series rows yet.</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% if ts_data_total > page_size %}
+            <nav class="d-flex align-items-center gap-2" aria-label="Time-series rows pagination">
+              <span class="text-muted small">Page {{ ts_data_page }} of {{ ts_data_total_pages }} ({{ ts_data_total }} rows)</span>
+              <ul class="pagination pagination-sm mb-0">
+                {% if ts_data_page > 1 %}
+                <li class="page-item"><a class="page-link" href="{{ url_for('main.data_browse', tab='ts_rows', ts_page=ts_page, causal_page=causal_page, ts_rows_page=ts_data_page - 1, causal_rows_page=causal_data_page) }}">Previous</a></li>
+                {% endif %}
+                {% if ts_data_page < ts_data_total_pages %}
+                <li class="page-item"><a class="page-link" href="{{ url_for('main.data_browse', tab='ts_rows', ts_page=ts_page, causal_page=causal_page, ts_rows_page=ts_data_page + 1, causal_rows_page=causal_data_page) }}">Next</a></li>
+                {% endif %}
+              </ul>
+            </nav>
+            {% endif %}
+          </div>
+
+          <div class="tab-pane fade {% if tab == 'causal_rows' %}show active{% endif %}" id="pane-causal-rows" role="tabpanel">
+            <p class="text-muted small">Single table from <code>causal_row</code> (all datasets), 50 rows per page.</p>
+            <div class="table-responsive">
+              <table class="table table-sm table-bordered align-middle">
+                <thead class="table-light">
+                  <tr>
+                    <th>Dataset ID</th>
+                    <th>Sheet</th>
+                    <th>Excel row</th>
+                    <th>Path</th>
+                    <th>Payload</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for r in causal_data_rows %}
+                  <tr>
+                    <td>{{ r.dataset_id }}</td>
+                    <td>{{ r.sheet_name }}</td>
+                    <td>{{ r.excel_row_number }}</td>
+                    <td>{{ r.propagation_path or "—" }}</td>
+                    <td class="small"><code>{{ r.row_payload | tojson }}</code></td>
+                  </tr>
+                  {% else %}
+                  <tr><td colspan="5" class="text-muted">No causal rows yet.</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% if causal_data_total > page_size %}
+            <nav class="d-flex align-items-center gap-2" aria-label="Causal rows pagination">
+              <span class="text-muted small">Page {{ causal_data_page }} of {{ causal_data_total_pages }} ({{ causal_data_total }} rows)</span>
+              <ul class="pagination pagination-sm mb-0">
+                {% if causal_data_page > 1 %}
+                <li class="page-item"><a class="page-link" href="{{ url_for('main.data_browse', tab='causal_rows', ts_page=ts_page, causal_page=causal_page, ts_rows_page=ts_data_page, causal_rows_page=causal_data_page - 1) }}">Previous</a></li>
+                {% endif %}
+                {% if causal_data_page < causal_data_total_pages %}
+                <li class="page-item"><a class="page-link" href="{{ url_for('main.data_browse', tab='causal_rows', ts_page=ts_page, causal_page=causal_page, ts_rows_page=ts_data_page, causal_rows_page=causal_data_page + 1) }}">Next</a></li>
+                {% endif %}
+              </ul>
+            </nav>
+            {% endif %}
+          </div>
+
+          <div class="tab-pane fade {% if tab == 'tables' %}show active{% endif %}" id="pane-all-tables" role="tabpanel">
+            <p class="text-muted small">
+              Base tables and views in the current MySQL schema (<code>DATABASE()</code>). Row counts are approximate where provided. Names must be letters, digits, and underscores.
+            </p>
+            {% if not all_tables %}
+              <p class="text-muted">No tables found.</p>
+            {% else %}
+              <div class="mb-3 d-flex flex-wrap gap-2 align-items-center">
+                <span class="text-muted small me-1">Table:</span>
+                {% for t in all_tables %}
+                  <a
+                    class="btn btn-sm {% if browse_table == t.name %}btn-primary{% else %}btn-outline-secondary{% endif %}"
+                    href="{{ url_for('main.data_browse', tab='tables', browse_table=t.name, browse_page=1, ts_page=ts_page, causal_page=causal_page, ts_rows_page=ts_data_page, causal_rows_page=causal_data_page) }}"
+                  >{{ t.name }} <span class="badge bg-light text-dark ms-1">~{{ t.approx_rows }}</span></a>
+                {% endfor %}
+              </div>
+              {% if browse_table %}
+                <p class="small text-muted mb-2">
+                  Showing <strong>{{ browse_table }}</strong> — {{ browse_total }} row(s) total, page {{ browse_page }} of {{ browse_total_pages }}.
+                </p>
+                <div class="table-responsive">
+                  <table class="table table-sm table-bordered align-middle">
+                    <thead class="table-light">
+                      <tr>
+                        {% for c in browse_columns %}
+                          <th class="text-nowrap">{{ c }}</th>
+                        {% endfor %}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for row in browse_rows %}
+                      <tr>
+                        {% for c in browse_columns %}
+                          <td class="small text-break"><code class="small">{{ row[c] }}</code></td>
+                        {% endfor %}
+                      </tr>
+                      {% else %}
+                      <tr><td colspan="{{ browse_columns|length or 1 }}" class="text-muted">No rows in this table.</td></tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+                {% if browse_total > page_size %}
+                <nav class="d-flex align-items-center gap-2" aria-label="Table browse pagination">
+                  <span class="text-muted small">Page {{ browse_page }} of {{ browse_total_pages }}</span>
+                  <ul class="pagination pagination-sm mb-0">
+                    {% if browse_page > 1 %}
+                    <li class="page-item"><a class="page-link" href="{{ url_for('main.data_browse', tab='tables', browse_table=browse_table, browse_page=browse_page - 1, ts_page=ts_page, causal_page=causal_page, ts_rows_page=ts_data_page, causal_rows_page=causal_data_page) }}">Previous</a></li>
+                    {% endif %}
+                    {% if browse_page < browse_total_pages %}
+                    <li class="page-item"><a class="page-link" href="{{ url_for('main.data_browse', tab='tables', browse_table=browse_table, browse_page=browse_page + 1, ts_page=ts_page, causal_page=causal_page, ts_rows_page=ts_data_page, causal_rows_page=causal_data_page) }}">Next</a></li>
+                    {% endif %}
+                  </ul>
+                </nav>
+                {% endif %}
+              {% endif %}
+            {% endif %}
+          </div>
+        </div>
+      {% endif %}
+    </main>
+  </div>
+</body>
+</html>

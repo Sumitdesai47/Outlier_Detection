@@ -20,6 +20,9 @@ build/
 .DS_Store
 Thumbs.db
 
+# Local MySQL data dir (if initialized under project)
+mysql_data/
+
 # Flask / uploads / temp
 *.log
 anomaly_upload_*/

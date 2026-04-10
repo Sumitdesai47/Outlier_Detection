@@ -9,17 +9,18 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
+from .causal_service import _find_propagation_path_column
 from .detail_pipeline_prep import (
-    load_causal_graph_from_chain_matrix_excel,
+    graph_from_propagation_paths,
     load_detail_pipeline_module,
     prepare_smoothed_from_wide_df,
 )
 from .time_series_utils import load_wide_time_series_xlsx
 
 
-def run_drift_phase_from_uploads(
-    time_series_xlsx_path: str,
-    causal_xlsx_path: str,
+def run_drift_phase_from_prepared_wide(
+    df: pd.DataFrame,
+    causal_propagation_paths: List[str],
     *,
     historic_ratio: float = 0.70,
     lookback_months: int = 2,
@@ -29,18 +30,16 @@ def run_drift_phase_from_uploads(
     timestamp_col: str = "Timestamp",
 ) -> Dict[str, Any]:
     """
-    Expensive root-cause loop is skipped. Returns minimal drift table + session blob for lazy analysis.
+    Drift ranking from an in-memory wide frame and list of propagation path strings
+    (same semantics as Chain_Matrix_Exhaustive). Root-cause loop is skipped.
     """
     dp = load_detail_pipeline_module()
-
-    wide = load_wide_time_series_xlsx(time_series_xlsx_path, timestamp_col_name=timestamp_col)
-    use_cols = [c for c in wide.columns if c not in {"Timestamp_raw"}]
-    df = wide[use_cols].copy()
-
-    graph = load_causal_graph_from_chain_matrix_excel(causal_xlsx_path)
+    use_cols = [c for c in df.columns if c not in {"Timestamp_raw"}]
+    work = df[use_cols].copy()
+    graph = graph_from_propagation_paths(causal_propagation_paths)
 
     _raw_df, smoothed_df, numeric_cols, start_date, end_date = prepare_smoothed_from_wide_df(
-        df,
+        work,
         timestamp_col=timestamp_col,
         lookback_months=lookback_months,
         rolling_window=rolling_window,
@@ -94,6 +93,7 @@ def run_drift_phase_from_uploads(
     }
 
     drift_raw_times = {str(r["Tag"]): r["Drift_Start_Time"] for _, r in top_drift_df.iterrows()}
+    summary_row["Drift_Raw_Times"] = {k: str(v) for k, v in drift_raw_times.items() if v is not None}
 
     session_blob: Dict[str, Any] = {
         "smoothed_df": smoothed_df,
@@ -111,6 +111,49 @@ def run_drift_phase_from_uploads(
         "summary": summary_row,
         "session_blob": session_blob,
     }
+
+
+def run_drift_phase_from_uploads(
+    time_series_xlsx_path: str,
+    causal_xlsx_path: str,
+    *,
+    historic_ratio: float = 0.70,
+    lookback_months: int = 2,
+    top_n_drift_tags: int = 10,
+    rolling_window: str = "5D",
+    rolling_min_periods: int = 1,
+    timestamp_col: str = "Timestamp",
+) -> Dict[str, Any]:
+    """
+    Expensive root-cause loop is skipped. Returns minimal drift table + session blob for lazy analysis.
+    """
+    wide = load_wide_time_series_xlsx(time_series_xlsx_path, timestamp_col_name=timestamp_col)
+    use_cols = [c for c in wide.columns if c not in {"Timestamp_raw"}]
+    df = wide[use_cols].copy()
+
+    cm = pd.read_excel(causal_xlsx_path, sheet_name="Chain_Matrix_Exhaustive")
+    if cm.empty:
+        raise ValueError("Chain_Matrix_Exhaustive sheet is empty.")
+    path_col = _find_propagation_path_column(cm)
+    paths = (
+        cm[path_col]
+        .dropna()
+        .astype(str)
+        .map(str.strip)
+        .loc[lambda s: s != ""]
+        .unique()
+        .tolist()
+    )
+    return run_drift_phase_from_prepared_wide(
+        df,
+        paths,
+        historic_ratio=historic_ratio,
+        lookback_months=lookback_months,
+        top_n_drift_tags=top_n_drift_tags,
+        rolling_window=rolling_window,
+        rolling_min_periods=rolling_min_periods,
+        timestamp_col=timestamp_col,
+    )
 
 
 def compute_top10_roots_with_paths(session_blob: Dict[str, Any], target_tag: str) -> List[Dict[str, Any]]:
@@ -174,3 +217,117 @@ def compute_top10_roots_with_paths(session_blob: Dict[str, Any], target_tag: str
         )
 
     return rows_out
+
+
+def run_target_root_cause_from_uploads(
+    time_series_xlsx_path: str,
+    causal_xlsx_path: str,
+    *,
+    target_tag: str,
+    end_date_str: str | None = None,
+    historic_ratio: float = 0.70,
+    lookback_months: int = 2,
+    rolling_window: str = "5D",
+    rolling_min_periods: int = 1,
+    timestamp_col: str = "Timestamp",
+) -> Dict[str, Any]:
+    """
+    Dummy-tab workflow:
+    1) Build causes list for requested target from causal graph relations.
+    2) Run anomaly root-cause scoring for that target and return top-10 roots.
+    """
+    dp = load_detail_pipeline_module()
+    wide = load_wide_time_series_xlsx(time_series_xlsx_path, timestamp_col_name=timestamp_col)
+    use_cols = [c for c in wide.columns if c not in {"Timestamp_raw"}]
+    df = wide[use_cols].copy()
+    if timestamp_col not in df.columns:
+        raise ValueError(f"Missing timestamp column: {timestamp_col}")
+    df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce")
+    df = df.dropna(subset=[timestamp_col]).copy()
+    if end_date_str:
+        end_day = pd.to_datetime(end_date_str, errors="coerce")
+        if pd.isna(end_day):
+            raise ValueError("Invalid selected date. Use YYYY-MM-DD.")
+        # Date input is day-based; include full selected day.
+        cutoff = end_day + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+        df = df[df[timestamp_col] <= cutoff].copy()
+        if df.empty:
+            raise ValueError("No time-series rows found on or before selected date.")
+
+    cm = pd.read_excel(causal_xlsx_path, sheet_name="Chain_Matrix_Exhaustive")
+    if cm.empty:
+        raise ValueError("Chain_Matrix_Exhaustive sheet is empty.")
+    path_col = _find_propagation_path_column(cm)
+    paths = (
+        cm[path_col]
+        .dropna()
+        .astype(str)
+        .map(str.strip)
+        .loc[lambda s: s != ""]
+        .unique()
+        .tolist()
+    )
+    graph = graph_from_propagation_paths(paths)
+
+    _raw_df, smoothed_df, numeric_cols, start_date, end_date = prepare_smoothed_from_wide_df(
+        df,
+        timestamp_col=timestamp_col,
+        lookback_months=lookback_months,
+        rolling_window=rolling_window,
+        rolling_min_periods=rolling_min_periods,
+    )
+    graph_nodes_in_data = [n for n in graph["nodes"] if n in smoothed_df.columns]
+    numeric_cols = [c for c in numeric_cols if c in graph_nodes_in_data]
+    if not numeric_cols:
+        raise ValueError(
+            "No overlapping tag columns between time-series data and causal graph nodes. "
+            "Check tag names match propagation paths."
+        )
+
+    target = str(target_tag or "").strip()
+    if not target:
+        raise ValueError("Target tag is required.")
+    if target not in smoothed_df.columns:
+        raise ValueError(f"Target tag '{target}' not found in time-series columns.")
+
+    config: Dict[str, Any] = dict(dp.CONFIG)
+    config["timestamp_col"] = timestamp_col
+    config["historic_ratio"] = historic_ratio
+    config["lookback_months"] = lookback_months
+    config["rolling_window"] = rolling_window
+    config["rolling_min_periods"] = rolling_min_periods
+
+    session_blob: Dict[str, Any] = {
+        "smoothed_df": smoothed_df,
+        "timestamp_col": timestamp_col,
+        "drift_raw_times": {},
+        "graph": graph,
+        "numeric_cols": numeric_cols,
+        "config": config,
+        "top_target_tags": [target],
+    }
+
+    rel = dp.get_target_relations(target, graph)
+    causes_list = {
+        "target_tag": target,
+        "direct_causes": [str(x) for x in rel.get("direct_causes", [])],
+        "indirect_causes": [str(x) for x in rel.get("indirect_causes", [])],
+        "other_ancestors": [str(x) for x in rel.get("other_ancestors", [])],
+    }
+
+    roots = compute_top10_roots_with_paths(session_blob, target)
+    return {
+        "target_tag": target,
+        "causes_list": causes_list,
+        "roots_top10": roots,
+        "smoothed_df": smoothed_df,
+        "timestamp_col": timestamp_col,
+        "summary": {
+            "Data_Start_Date_Used": str(start_date),
+            "Data_End_Date_Used": str(end_date),
+            "Selected_Last_Date": str(end_date_str or ""),
+            "Lookback_Months": lookback_months,
+            "Historic_Ratio": historic_ratio,
+            "Total_Numeric_Tags_In_Window": len(numeric_cols),
+        },
+    }

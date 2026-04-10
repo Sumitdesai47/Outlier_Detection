@@ -304,7 +304,7 @@
         console.error("part3-config parse error", err);
         const hint = document.getElementById("part3PlotHint");
         if (hint) {
-          hint.textContent = "Could not load Outlier Detection configuration.";
+          hint.textContent = "Could not load Outlier detection configuration.";
           hint.style.display = "block";
         }
       }
@@ -320,10 +320,18 @@
   </div>
   <div class="layout">
     <aside class="sidebar">
-      <div class="sidebar-title">Anomaly Dashboard</div>
+      <div class="sidebar-title">Process Intelligence</div>
       <nav class="sidebar-nav">
-        <a class="sidebar-link {% if active_tab == 'part2' %}active{% endif %}" href="{{ url_for('main.index', tab='part2') }}">Anomaly detection</a>
-        <a class="sidebar-link {% if active_tab == 'part3' %}active{% endif %}" href="{{ url_for('main.index', tab='part3') }}">Outlier Detection</a>
+        <a class="sidebar-link {% if request.endpoint == 'main.overview_dashboard' %}active{% endif %}" href="{{ url_for('main.overview_dashboard') }}">Dashboard</a>
+        {% if database_enabled %}
+        <a class="sidebar-link {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
+        {% endif %}
+        <a class="sidebar-link {% if active_tab == 'part2' %}active{% endif %}" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
+        <a class="sidebar-link {% if active_tab == 'part3' %}active{% endif %}" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
+        {% if database_enabled %}
+        <a class="sidebar-link {% if request.endpoint in ('main.data_browse', 'main.data_timeseries_detail', 'main.data_causal_detail') %}active{% endif %}" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
+        <a class="sidebar-link {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
+        {% endif %}
       </nav>
       <div class="sidebar-help text-muted">
         Results for the latest run.
@@ -337,7 +345,7 @@
 
       {% if part2 %}
       <div class="card part2-card">
-        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Anomaly detection</h2>
+        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Outlier Detection</h2>
         <p class="text-muted small">Causal graph from <code>Chain_Matrix_Exhaustive</code> propagation paths. Top drift tags use the same scoring as <code>Detail_Pipeline.py</code>.</p>
 
         <script type="application/json" id="part2-config">{{ part2.client_config_json | safe }}</script>
@@ -422,8 +430,9 @@
       {% if part3 %}
       <div class="card part3-card">
         <div class="dashboard-section-head">
-          <h2 class="dashboard-section-title">Outlier Detection</h2>
-          <p class="dashboard-section-sub text-muted">Primary tag uses the left axis; compare tags use an independent right axis so different units stay readable.</p>
+          <div class="mt-2">
+            <a class="btn btn-sm btn-outline-primary" href="{{ url_for('main.part3_download_excel', result_id=part3.result_id) }}">Download Result (Excel)</a>
+          </div>
         </div>
         {% if part3.tag_summaries|length == 0 %}
           <div class="text-muted">No drifted tags found in the uploaded file.</div>
