@@ -1,6 +1,7 @@
 """MySQL connection from DATABASE_URL (optional). Use mysql://user:pass@host:3306/anomaly"""
 from __future__ import annotations
 
+import logging
 import os
 import re
 from contextlib import contextmanager
@@ -10,6 +11,8 @@ from urllib.parse import unquote_plus, urlparse
 import pymysql
 from pymysql.connections import Connection
 from pymysql.err import OperationalError as PyMySQLOperationalError
+
+logger = logging.getLogger(__name__)
 
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -115,6 +118,22 @@ def get_connection() -> Generator[Connection, None, None]:
         raise RuntimeError("DATABASE_URL is not set or is not a mysql:// URL")
     conn = pymysql.connect(**mysql_connect_kwargs(url))
     try:
+        # Reduce errno 1038 (out of sort memory) on large ORDER BY / DISTINCT without changing my.cnf.
+        # Override floor with MYSQL_SORT_BUFFER_MIN (bytes), clamped to a sane range.
+        try:
+            raw_min = (os.environ.get("MYSQL_SORT_BUFFER_MIN") or "").strip()
+            floor_b = int(raw_min) if raw_min else 64 * 1024 * 1024
+        except ValueError:
+            floor_b = 64 * 1024 * 1024
+        floor_b = max(1024 * 1024, min(floor_b, 512 * 1024 * 1024))
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    "SET SESSION sort_buffer_size = GREATEST(@@session.sort_buffer_size, %s)",
+                    (floor_b,),
+                )
+            except Exception:
+                logger.debug("session sort_buffer_size tweak skipped", exc_info=True)
         yield conn
         conn.commit()
     except Exception:

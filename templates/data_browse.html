@@ -15,13 +15,22 @@
       <nav class="sidebar-nav">
         <a class="sidebar-link {% if request.endpoint == 'main.overview_dashboard' %}active{% endif %}" href="{{ url_for('main.overview_dashboard') }}">Dashboard</a>
         {% if database_enabled %}
-        <a class="sidebar-link {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
+        <a class="sidebar-link d-none {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
+        <a class="sidebar-link {% if request.endpoint in ('main.live_outlier_results', 'main.live_outlier_result_detail') %}active{% endif %}" href="{{ url_for('main.live_outlier_results') }}">Live Outlier detection</a>
         {% endif %}
-        <a class="sidebar-link" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
-        <a class="sidebar-link" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
+        <a class="sidebar-link" href="{{ url_for('main.index', tab='part4') }}">Auto (No Causal)</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part5') }}">Auto (No Clean Data)</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part6') }}">Auto Identification</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part7') }}">Testing (V4)</a>
+        <a class="sidebar-link" href="{{ url_for('main.index', tab='part8') }}">Outlier detection</a>
+        <a class="sidebar-link" href="{{ url_for('main.index', tab='part9') }}">Outlier detection (using data model)</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part10') }}">Testing (V7)</a>
         {% if database_enabled %}
-        <a class="sidebar-link {% if request.endpoint in ('main.data_browse', 'main.data_timeseries_detail', 'main.data_causal_detail') %}active{% endif %}" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
-        <a class="sidebar-link {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
+        <a class="sidebar-link d-none {% if request.endpoint in ('main.data_browse', 'main.data_timeseries_detail', 'main.data_causal_detail') %}active{% endif %}" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
+        <a class="sidebar-link d-none {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
+        <a class="sidebar-link {% if request.endpoint == 'main.outlier_excel_upload_page' %}active{% endif %}" href="{{ url_for('main.outlier_excel_upload_page') }}">Live outlier data upload</a>
         {% endif %}
       </nav>
       <div class="sidebar-help text-muted">
@@ -153,7 +162,8 @@
 
           <div class="tab-pane fade {% if tab == 'ts_rows' %}show active{% endif %}" id="pane-ts-rows" role="tabpanel">
             <p class="text-muted small">
-              All rows from <code>timeseries_observation</code>, 50 per page.
+              Rows from <code>timeseries_observation</code>, 50 per page, ordered by internal row id (newest inserts first)
+              so MySQL does not sort the entire table (large uploads would otherwise hit sort-buffer limits).
               <strong>{{ ts_obs_distinct_dataset_count|default(0) }}</strong> unique <code>dataset_id</code> value(s) in this table
               ({{ ts_data_total|default(0) }} observation row(s) total).
             </p>
@@ -201,7 +211,9 @@
           </div>
 
           <div class="tab-pane fade {% if tab == 'causal_rows' %}show active{% endif %}" id="pane-causal-rows" role="tabpanel">
-            <p class="text-muted small">Single table from <code>causal_row</code> (all datasets), 50 rows per page.</p>
+            <p class="text-muted small">
+              Single table from <code>causal_row</code> (all datasets), 50 rows per page, ordered by row id (newest first) to avoid heavy server-side sorts on large databases.
+            </p>
             <div class="table-responsive">
               <table class="table table-sm table-bordered align-middle">
                 <thead class="table-light">

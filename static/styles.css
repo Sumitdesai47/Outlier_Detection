@@ -31,21 +31,23 @@ body {
 
 .sidebar {
   width: 280px;
-  background: linear-gradient(180deg, #111827 0%, #0f172a 100%);
-  border-right: 1px solid #1f2937;
+  flex-shrink: 0;
+  background: #ffffff;
+  border-right: 1px solid var(--border-main);
   padding: 18px 16px;
   height: 100vh;
   position: sticky;
   top: 0;
   overflow: auto;
-  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.04);
+  box-shadow: 2px 0 12px rgba(15, 23, 42, 0.04);
+  z-index: 2;
 }
 
 .sidebar-title {
   font-weight: 800;
   margin-bottom: 14px;
   font-size: 16px;
-  color: #f8fafc;
+  color: var(--text-main);
   letter-spacing: 0.01em;
 }
 
@@ -59,18 +61,18 @@ body {
   padding: 10px 12px;
   border-radius: 10px;
   text-decoration: none;
-  color: #e2e8f0;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  background: rgba(15, 23, 42, 0.28);
+  color: var(--text-main);
+  border: 1px solid var(--border-main);
+  background: var(--surface-2);
   font-weight: 500;
   transition: all 0.18s ease;
 }
 
 .sidebar-link:hover {
-  background: rgba(30, 41, 59, 0.88);
+  background: #f1f5f9;
   text-decoration: none;
-  border-color: rgba(148, 163, 184, 0.45);
-  color: #ffffff;
+  border-color: #cbd5e1;
+  color: var(--text-main);
 }
 
 .sidebar-link.active {
@@ -78,14 +80,14 @@ body {
   border-color: #ef4444;
   color: #ffffff;
   font-weight: 700;
-  box-shadow: 0 8px 18px rgba(214, 31, 38, 0.24);
+  box-shadow: 0 8px 18px rgba(214, 31, 38, 0.2);
 }
 
 .sidebar-subnav {
   margin-top: -2px;
   margin-left: 8px;
   padding-left: 10px;
-  border-left: 2px solid rgba(148, 163, 184, 0.45);
+  border-left: 2px solid var(--border-main);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -96,31 +98,31 @@ body {
   padding: 7px 10px;
   border-radius: 8px;
   text-decoration: none;
-  color: #cbd5e1;
+  color: var(--text-soft);
   font-size: 0.84rem;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  background: rgba(15, 23, 42, 0.18);
+  border: 1px solid var(--border-main);
+  background: var(--surface);
 }
 
 .sidebar-sublink:hover {
-  color: #ffffff;
-  border-color: rgba(148, 163, 184, 0.45);
-  background: rgba(30, 41, 59, 0.88);
+  color: var(--text-main);
+  border-color: #cbd5e1;
+  background: var(--surface-2);
 }
 
 .sidebar-sublink.active {
-  color: #ffffff;
-  border-color: #ef4444;
-  background: rgba(214, 31, 38, 0.25);
+  color: var(--brand-red-dark);
+  border-color: rgba(214, 31, 38, 0.35);
+  background: var(--brand-soft);
   font-weight: 700;
 }
 
 .sidebar-help {
   margin-top: 14px;
   font-size: 13px;
-  border-left: 3px solid #f87171;
+  border-left: 3px solid var(--brand-red);
   padding-left: 10px;
-  color: #cbd5e1 !important;
+  color: var(--text-soft) !important;
 }
 
 /* Hourly results dashboard */
@@ -227,6 +229,7 @@ body {
 
 .main {
   flex: 1;
+  min-width: 0; /* lets flex item shrink so wide tables/plots do not overlap the sidebar */
   padding: 22px 22px;
   overflow: auto;
   background: transparent;
@@ -570,7 +573,7 @@ hr {
     height: auto;
     position: static;
     border-right: none;
-    border-bottom: 1px solid #1f2937;
+    border-bottom: 1px solid var(--border-main);
   }
 
   .main {
@@ -705,6 +708,23 @@ hr {
 
 .dashboard-metric-progress .progress-bar {
   background: linear-gradient(90deg, #fda4af 0%, #d61f26 100%) !important;
+}
+
+/* Live Outlier dataset cards on /dashboard */
+.dashboard-dataset-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 768px) {
+  .dashboard-dataset-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (min-width: 1200px) {
+  .dashboard-dataset-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 .dashboard-module {

@@ -258,6 +258,155 @@
       }
     }
 
+    async function loadPart4Plot(tag) {
+      const rid = window.__part4ResultId || "";
+      const host = document.getElementById("part4PlotHost");
+      const hint = document.getElementById("part4PlotHint");
+      if (!host || !tag || !rid) {
+        if (hint) {
+          hint.textContent = "Missing session or tag data.";
+          hint.style.display = "block";
+        }
+        return;
+      }
+      if (hint) {
+        hint.textContent = "Loading plot...";
+        hint.style.display = "block";
+      }
+      try {
+        const res = await fetch(
+          "/api/part4/plot/" + encodeURIComponent(rid) + "?tag=" + encodeURIComponent(tag)
+        );
+        if (!res.ok) {
+          const err = await res.json().catch(function () { return {}; });
+          throw new Error(err.error || res.statusText);
+        }
+        const fig = await res.json();
+        if (typeof Plotly !== "undefined" && Plotly.purge) {
+          Plotly.purge(host);
+        }
+        Plotly.newPlot(host, fig.data, fig.layout, {
+          responsive: true,
+          displaylogo: false,
+          modeBarButtonsToRemove: ["lasso2d", "select2d"],
+          toImageButtonOptions: { format: "png", filename: "auto_without_causal_plot", scale: 2 },
+        });
+        if (hint) hint.style.display = "none";
+      } catch (e) {
+        if (hint) {
+          hint.textContent = "Could not load plot: " + (e && e.message ? e.message : e);
+          hint.style.display = "block";
+        }
+      }
+    }
+
+    function showPart4Tag(tag) {
+      const tableBody = document.getElementById("part4RowsTableBody");
+      const rowsByTag = window.__part4RowsByTag || {};
+      const limitsByTag = window.__part4LimitsByTag || {};
+      const xVarsByTag = window.__part4XVarsByTag || {};
+      const limitsBody = document.getElementById("part4LimitsBody");
+      const xVarsBody = document.getElementById("part4XVarsBody");
+      if (!tag || !tableBody) return;
+
+      const rows = rowsByTag[tag] || [];
+      tableBody.innerHTML = "";
+      if (rows.length === 0) {
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = 7;
+        td.className = "text-muted";
+        td.textContent = "No table rows available for this tag.";
+        tr.appendChild(td);
+        tableBody.appendChild(tr);
+      } else {
+        rows.forEach(function (r) {
+          const tr = document.createElement("tr");
+          ["Timestamp", "Actual_Value", "Predicted_Value", "Final_Class", "Direction", "Reason"].forEach(function (k) {
+            const td = document.createElement("td");
+            const v = r[k];
+            td.textContent = v === null || v === undefined ? "" : String(v);
+            tr.appendChild(td);
+          });
+          tableBody.appendChild(tr);
+        });
+      }
+
+      if (limitsBody) {
+        const l = limitsByTag[tag] || {};
+        const fmt = function (v) {
+          if (v === null || v === undefined || v === "") return "";
+          const n = Number(v);
+          if (Number.isNaN(n)) return String(v);
+          return n.toFixed(4);
+        };
+        const classCounts = { drift: 0, driftAnomaly: 0, strong: 0, normal: 0, other: 0 };
+        rows.forEach(function (r) {
+          const fc = String(r.Final_Class || "").trim();
+          if (fc === "Drift") classCounts.drift += 1;
+          else if (fc === "Drift + Anomaly") classCounts.driftAnomaly += 1;
+          else if (fc === "Strong Anomaly") classCounts.strong += 1;
+          else if (fc === "Normal") classCounts.normal += 1;
+          else classCounts.other += 1;
+        });
+        limitsBody.innerHTML = "";
+        [
+          ["Total timestamps (rows)", String(rows.length)],
+          ["Points classified as Drift", String(classCounts.drift)],
+          ["Points classified as Drift + Anomaly", String(classCounts.driftAnomaly)],
+          ["Points classified as Strong Anomaly", String(classCounts.strong)],
+          ["Points classified as Normal", String(classCounts.normal)],
+          ["Points (other / unclassified)", String(classCounts.other)],
+          ["Baseline Center", fmt(l.baseline_center)],
+          ["Baseline Scale", fmt(l.baseline_scale)],
+          ["Drift Lower Limit", fmt(l.drift_lower_limit)],
+          ["Drift Upper Limit", fmt(l.drift_upper_limit)],
+          ["Drift + Anomaly Lower", fmt(l.drift_anomaly_lower_limit)],
+          ["Drift + Anomaly Upper", fmt(l.drift_anomaly_upper_limit)],
+          ["Strong Anomaly Lower", fmt(l.strong_anomaly_lower_limit)],
+          ["Strong Anomaly Upper", fmt(l.strong_anomaly_upper_limit)],
+        ].forEach(function (pair) {
+          const tr = document.createElement("tr");
+          const th = document.createElement("th");
+          th.textContent = pair[0];
+          th.style.width = "260px";
+          const td = document.createElement("td");
+          td.textContent = pair[1];
+          tr.appendChild(th);
+          tr.appendChild(td);
+          limitsBody.appendChild(tr);
+        });
+      }
+
+      if (xVarsBody) {
+        const xs = xVarsByTag[tag] || [];
+        xVarsBody.innerHTML = "";
+        if (!xs.length) {
+          const tr = document.createElement("tr");
+          const td = document.createElement("td");
+          td.colSpan = 2;
+          td.className = "text-muted";
+          td.textContent = "No correlated tags found.";
+          tr.appendChild(td);
+          xVarsBody.appendChild(tr);
+        } else {
+          xs.forEach(function (x) {
+            const tr = document.createElement("tr");
+            const tdTag = document.createElement("td");
+            const tdCorr = document.createElement("td");
+            tdTag.textContent = String(x.tag || "");
+            const n = Number(x.corr);
+            tdCorr.textContent = Number.isNaN(n) ? "" : n.toFixed(4);
+            tr.appendChild(tdTag);
+            tr.appendChild(tdCorr);
+            xVarsBody.appendChild(tr);
+          });
+        }
+      }
+
+      loadPart4Plot(tag);
+    }
+
     function showDriftMonth(tagIndex, month) {
       const panels = document.querySelectorAll('.drift-month-panel[data-tag-index="' + tagIndex + '"]');
       panels.forEach(function (p) {
@@ -289,23 +438,42 @@
       }
 
       const raw = document.getElementById("part3-config");
-      if (!raw) return;
-      try {
-        const cfg = JSON.parse(raw.textContent);
-        window.__part3ResultId = cfg.resultId;
-        window.__part3DriftedTags = cfg.driftedTags || [];
-        window.__part3AllTags = cfg.allTags || [];
-        window.__part3MonthsByTagIdx = cfg.monthsByTagIdx || [];
-        const primarySel = document.getElementById("part3PrimaryTag");
-        if (primarySel && window.__part3DriftedTags.length > 0) {
-          showDriftTag(primarySel.value);
+      if (raw) {
+        try {
+          const cfg = JSON.parse(raw.textContent);
+          window.__part3ResultId = cfg.resultId;
+          window.__part3DriftedTags = cfg.driftedTags || [];
+          window.__part3AllTags = cfg.allTags || [];
+          window.__part3MonthsByTagIdx = cfg.monthsByTagIdx || [];
+          const primarySel = document.getElementById("part3PrimaryTag");
+          if (primarySel && window.__part3DriftedTags.length > 0) {
+            showDriftTag(primarySel.value);
+          }
+        } catch (err) {
+          console.error("part3-config parse error", err);
+          const hint = document.getElementById("part3PlotHint");
+          if (hint) {
+            hint.textContent = "Could not load Outlier detection configuration.";
+            hint.style.display = "block";
+          }
         }
-      } catch (err) {
-        console.error("part3-config parse error", err);
-        const hint = document.getElementById("part3PlotHint");
-        if (hint) {
-          hint.textContent = "Could not load Outlier detection configuration.";
-          hint.style.display = "block";
+      }
+
+      const rawP4 = document.getElementById("part4-config");
+      if (rawP4) {
+        try {
+          const cfg4 = JSON.parse(rawP4.textContent);
+          window.__part4ResultId = cfg4.resultId || "";
+          window.__part4RowsByTag = cfg4.rowsByTag || {};
+          window.__part4LimitsByTag = cfg4.limitsByTag || {};
+          window.__part4DriftPointsByTag = cfg4.driftPointsByTag || {};
+          window.__part4XVarsByTag = cfg4.xVarsByTag || {};
+          const sel = document.getElementById("part4PrimaryTag");
+          if (sel && sel.options.length > 0) {
+            showPart4Tag(sel.value);
+          }
+        } catch (err) {
+          console.error("part4-config parse error", err);
         }
       }
     });
@@ -324,17 +492,27 @@
       <nav class="sidebar-nav">
         <a class="sidebar-link {% if request.endpoint == 'main.overview_dashboard' %}active{% endif %}" href="{{ url_for('main.overview_dashboard') }}">Dashboard</a>
         {% if database_enabled %}
-        <a class="sidebar-link {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
+        <a class="sidebar-link d-none {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
+        <a class="sidebar-link {% if request.endpoint in ('main.live_outlier_results', 'main.live_outlier_result_detail') %}active{% endif %}" href="{{ url_for('main.live_outlier_results') }}">Live Outlier detection</a>
         {% endif %}
-        <a class="sidebar-link {% if active_tab == 'part2' %}active{% endif %}" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
-        <a class="sidebar-link {% if active_tab == 'part3' %}active{% endif %}" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
+        <a class="sidebar-link {% if active_tab == 'part4' %}active{% endif %}" href="{{ url_for('main.index', tab='part4') }}">Auto (No Causal)</a>
+        <a class="sidebar-link d-none {% if active_tab == 'part5' %}active{% endif %}" href="{{ url_for('main.index', tab='part5') }}">Auto (No Clean Data)</a>
+        <a class="sidebar-link d-none {% if active_tab == 'part6' %}active{% endif %}" href="{{ url_for('main.index', tab='part6') }}">Auto Identification</a>
+        <a class="sidebar-link d-none {% if active_tab == 'part7' %}active{% endif %}" href="{{ url_for('main.index', tab='part7') }}">Testing (V4)</a>
+        <a class="sidebar-link {% if active_tab == 'part8' %}active{% endif %}" href="{{ url_for('main.index', tab='part8') }}">Outlier detection</a>
+        <a class="sidebar-link {% if active_tab == 'part9' %}active{% endif %}" href="{{ url_for('main.index', tab='part9') }}">Outlier detection (using data model)</a>
+        <a class="sidebar-link d-none {% if active_tab == 'part10' %}active{% endif %}" href="{{ url_for('main.index', tab='part10') }}">Testing (V7)</a>
         {% if database_enabled %}
-        <a class="sidebar-link {% if request.endpoint in ('main.data_browse', 'main.data_timeseries_detail', 'main.data_causal_detail') %}active{% endif %}" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
-        <a class="sidebar-link {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
+        <a class="sidebar-link d-none {% if request.endpoint in ('main.data_browse', 'main.data_timeseries_detail', 'main.data_causal_detail') %}active{% endif %}" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
+        <a class="sidebar-link d-none {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
+        <a class="sidebar-link {% if request.endpoint == 'main.outlier_excel_upload_page' %}active{% endif %}" href="{{ url_for('main.outlier_excel_upload_page') }}">Live outlier data upload</a>
         {% endif %}
       </nav>
       <div class="sidebar-help text-muted">
         Results for the latest run.
+        <div class="mt-2"><a class="link-secondary small" href="{{ url_for('main.download_workflow_comparison_matrix') }}">Download workflow comparison: Auto vs outlier detection vs data model (Excel)</a></div>
       </div>
     </aside>
 
@@ -509,6 +687,116 @@
             </div>
           {% endfor %}
           </div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {% if part4 %}
+      <div class="card part3-card">
+        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Auto Outlier + Drift (No Causal)</h2>
+        <p class="text-muted small">This run executes outlier and drift detection directly from time-series data only.</p>
+
+        <script type="application/json" id="part4-config">{{ {
+          "resultId": part4.result_id,
+          "rowsByTag": part4.details_by_tag,
+          "limitsByTag": part4.tag_limits_by_tag,
+          "driftPointsByTag": part4.drift_points_by_tag,
+          "xVarsByTag": part4.x_variables_by_tag
+        }|tojson }}</script>
+
+        {% if part4.summary %}
+        <div class="table-responsive mb-3">
+          <table class="table table-sm table-bordered">
+            <tbody>
+            {% for k, v in part4.summary.items() %}
+              <tr>
+                <th scope="row" style="width: 280px;">{{ k }}</th>
+                <td>{{ v }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+
+        <h3 style="font-size: 15px;">Top tags by drift points</h3>
+        <div class="table-responsive mb-3">
+          <table class="table table-sm table-striped">
+            <thead>
+              <tr>
+                <th>Tag</th>
+                <th>Status</th>
+                <th>Drift timestamp</th>
+                <th>Drift points</th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for r in part4.top_tags_by_points %}
+              <tr>
+                <td><code>{{ r.tag }}</code></td>
+                <td>{{ r.status }}</td>
+                <td>{{ r.drift_timestamp }}</td>
+                <td>{{ r.num_drift_points }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="4" class="text-muted">No drift tags detected.</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        {% if part4.tag_names|length > 0 %}
+        <div class="row mb-3 g-3 align-items-end">
+          <div class="col-md-6">
+            <label for="part4PrimaryTag" class="form-label-sm">Select tag</label>
+            <select id="part4PrimaryTag" class="form-select" onchange="showPart4Tag(this.value)">
+              {% for t in part4.tag_names %}
+                <option value="{{ t }}">{{ t }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <div id="part4PlotHint" class="text-muted small mb-2" style="display:none;">Loading plot...</div>
+        <div class="chart-surface mb-4">
+          <div id="part4PlotHost" class="plot-host" style="min-height: 520px;"></div>
+        </div>
+
+        <h4 style="font-size: 14px;">Selected tag limits</h4>
+        <div class="table-responsive mb-3">
+          <table class="table table-sm table-bordered">
+            <tbody id="part4LimitsBody"></tbody>
+          </table>
+        </div>
+
+        <h4 style="font-size: 14px;">Most correlated tags</h4>
+        <div class="table-responsive mb-3">
+          <table class="table table-sm table-striped">
+            <thead>
+              <tr>
+                <th>Tag</th>
+                <th>Correlation</th>
+              </tr>
+            </thead>
+            <tbody id="part4XVarsBody"></tbody>
+          </table>
+        </div>
+
+        <h4 style="font-size: 14px;">Detailed rows for selected tag</h4>
+        <div class="table-responsive mb-3">
+          <table class="table table-sm table-striped">
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Actual Value</th>
+                <th>Predicted Value</th>
+                <th>Final Class</th>
+                <th>Direction</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody id="part4RowsTableBody"></tbody>
+          </table>
+        </div>
         {% endif %}
       </div>
       {% endif %}

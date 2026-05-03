@@ -90,7 +90,9 @@ def parse_causal_matrix_xlsx(content: bytes) -> List[Tuple[str, int, Dict[str, A
         raise ValueError("Causal matrix workbook has no sheets.")
     out: List[Tuple[str, int, Dict[str, Any]]] = []
     for sheet in xl.sheet_names:
-        df = pd.read_excel(xl, sheet_name=sheet)
+        df = pd.read_excel(
+            io.BytesIO(content), sheet_name=sheet, engine="openpyxl"
+        )
         if df.empty:
             continue
         for ridx, (_, series) in enumerate(df.iterrows()):

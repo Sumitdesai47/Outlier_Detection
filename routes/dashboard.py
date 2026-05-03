@@ -11,7 +11,16 @@ from datetime import date, datetime
 import pandas as pd
 import pymysql
 import pymysql.err
-from flask import Blueprint, Response, abort, jsonify, render_template, request, send_file, session
+from flask import (
+    Blueprint,
+    Response,
+    abort,
+    jsonify,
+    render_template,
+    request,
+    send_file,
+    session,
+)
 
 from services import db_queries
 from services import db_repository as db_repo
@@ -22,14 +31,32 @@ from services.anomaly_pipeline import (
     run_target_root_cause_from_uploads,
 )
 from services.drift_detection_service import build_plot_figure_for_tag, run_drift_detection_on_xlsx
+from services.auto_workflow_docs import DOCS as AUTO_WORKFLOW_DOCS
+from services.auto_without_causal_outlier_drift import (
+    run_auto_identification_outlier_drift,
+    run_auto_without_causal_outlier_drift,
+    run_testing_deviation_spike_v4_outlier_drift,
+    run_testing_deviation_spike_v5_outlier_drift,
+    run_testing_fusion_v7_outlier_drift,
+    run_testing_top5_corr_regression_outlier_drift,
+    run_without_clean_data_outlier_drift,
+)
 from services.json_sanitize import jsonable
 from services.part2_plots import build_part2_target_plot_json
 from services.hourly_detail_service import build_scheduled_job_tag_detail
+from services.live_outlier_dashboard import (
+    build_live_outlier_excel_day_tag_detail,
+    build_part8_display_from_stored_analysis,
+)
+from services.live_outlier_excel_upload import insert_live_outlier_excel_upload
+from services.scheduled_anomaly_runner import floor_day_utc_naive
 from services.session_cache import part2_load, part2_store, part3_load, part3_store
 from services.uploads import save_upload_to_temp
 from services.dataset_upload_parse import validate_excel_filename
 from services.plant_dataset_upload import insert_plant_upload_transaction
 from services.dashboard_overview import build_dashboard_snapshot
+from services.live_dashboard_status import build_plant_live_status
+from services.scheduled_anomaly_runner import run_live_dashboard_catchup
 
 bp = Blueprint("main", __name__)
 logger = logging.getLogger(__name__)
@@ -46,18 +73,18 @@ def _causal_matrix_file_configured() -> bool:
 
 def _resolve_home_tab() -> str:
     q = (request.args.get("tab") or "").strip().lower()
-    if q in {"part2", "part3"}:
+    if q in {"part2", "part3", "part4", "part5", "part6", "part7", "part8", "part9", "part10"}:
         return q
     if q == "db":
-        return "part2"
+        return "part4"
     if _causal_matrix_file_configured():
-        return "part2"
+        return "part4"
     last = session.get("last_workflow")
     if last == "anomaly":
-        return "part2"
+        return "part4"
     if last == "outlier":
-        return "part3"
-    return "part3"
+        return "part4"
+    return "part4"
 
 
 def _has_causal_matrix_context() -> bool:
@@ -121,6 +148,7 @@ def overview_dashboard():
             mysql_diagnostic=None,
             dash=None,
             chart_json=None,
+            live_outlier_datasets=[],
         )
 
     ok, ping_err = ping_mysql()
@@ -133,6 +161,7 @@ def overview_dashboard():
             mysql_diagnostic=ping_err,
             dash=None,
             chart_json=None,
+            live_outlier_datasets=[],
         )
 
     try:
@@ -146,6 +175,7 @@ def overview_dashboard():
             mysql_diagnostic=f"Schema: {e}",
             dash=None,
             chart_json=None,
+            live_outlier_datasets=[],
         )
     except pymysql.err.OperationalError as e:
         logger.warning("Dashboard schema operational: %s", e)
@@ -157,6 +187,7 @@ def overview_dashboard():
             mysql_diagnostic=msg,
             dash=None,
             chart_json=None,
+            live_outlier_datasets=[],
         )
 
     dash = build_dashboard_snapshot()
@@ -164,6 +195,11 @@ def overview_dashboard():
         dash.get("chart_labels") or [],
         dash.get("chart_values") or [],
     )
+    try:
+        live_outlier_datasets = db_queries.list_live_outlier_excel_datasets()
+    except Exception as e:
+        logger.warning("dashboard live outlier list: %s", e)
+        live_outlier_datasets = []
     return render_template(
         "dashboard.html",
         **base_kw,
@@ -171,6 +207,7 @@ def overview_dashboard():
         mysql_diagnostic=None,
         dash=dash,
         chart_json=chart_json,
+        live_outlier_datasets=live_outlier_datasets,
     )
 
 
@@ -244,6 +281,8 @@ def _hourly_results_unreachable(
         selected_plant_id=None,
         selected_plant=None,
         plant_needs_mapping=False,
+        live_plant_status=None,
+        live_latest_scheduled_job=None,
     )
 
 
@@ -264,6 +303,64 @@ def _sanitize_hourly_drifts_for_json(drifts: list) -> list:
     return out
 
 
+def _live_dashboard_manual_trigger_authorized() -> bool:
+    expected = (os.environ.get("LIVE_DASHBOARD_MANUAL_TOKEN") or "").strip()
+    if not expected:
+        return True
+    h = (request.headers.get("X-Live-Dashboard-Token") or "").strip()
+    if h == expected:
+        return True
+    body = request.get_json(silent=True) or {}
+    if str(body.get("token") or "").strip() == expected:
+        return True
+    q = (request.args.get("token") or "").strip()
+    return q == expected
+
+
+@bp.route("/api/live-dashboard/plant-status")
+def api_live_dashboard_plant_status():
+    if not is_configured():
+        return jsonify({"error": "database_not_configured"}), 503
+    pid = request.args.get("plant", type=int)
+    if pid is None:
+        return jsonify({"error": "missing plant query param"}), 400
+    try:
+        return jsonify(build_plant_live_status(pid))
+    except Exception as e:
+        logger.exception("api_live_dashboard_plant_status: %s", e)
+        return jsonify({"error": "failed"}), 500
+
+
+@bp.route("/api/live-dashboard/catchup", methods=["POST"])
+def api_live_dashboard_catchup():
+    if not is_configured():
+        return jsonify({"error": "database_not_configured"}), 503
+    if not _live_dashboard_manual_trigger_authorized():
+        return jsonify({"error": "unauthorized", "hint": "Set X-Live-Dashboard-Token header"}), 401
+    body = request.get_json(silent=True) or {}
+    plant_id = None
+    if body.get("plant_dataset_id") is not None:
+        try:
+            plant_id = int(body["plant_dataset_id"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "invalid plant_dataset_id"}), 400
+    max_day_runs = None
+    if body.get("max_day_runs") is not None:
+        try:
+            max_day_runs = int(body["max_day_runs"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "invalid max_day_runs"}), 400
+    try:
+        summary = run_live_dashboard_catchup(
+            plant_dataset_id=plant_id, max_day_runs=max_day_runs
+        )
+        # Always 200 when the handler ran; clients use summary["ok"] and summary["message"].
+        return jsonify(summary), 200
+    except Exception as e:
+        logger.exception("api_live_dashboard_catchup: %s", e)
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
 @bp.route("/hourly-results")
 def hourly_results():
     if not is_configured():
@@ -282,6 +379,8 @@ def hourly_results():
             plant_needs_mapping=False,
             mysql_diagnostic=None,
             schema_error=None,
+            live_plant_status=None,
+            live_latest_scheduled_job=None,
         )
     ok, ping_err = ping_mysql()
     if not ok:
@@ -317,6 +416,8 @@ def hourly_results():
     selected_plant: dict | None = None
     plant_needs_mapping = False
     completed_days_iso: list[str] = []
+    live_plant_status: dict | None = None
+    live_latest_scheduled_job: dict | None = None
 
     try:
         plants = db_queries.list_plants_for_dashboard()
@@ -368,8 +469,18 @@ def hourly_results():
                 if job:
                     drifts = db_queries.scheduled_drift_rows_for_job(int(job["id"]))
 
-            if selected_day_value and selected_day_value not in completed_days_iso:
-                completed_days_iso = [selected_day_value] + completed_days_iso
+            if selected_plant_id is not None:
+                try:
+                    live_plant_status = build_plant_live_status(int(selected_plant_id))
+                except Exception as e:
+                    logger.warning("build_plant_live_status: %s", e)
+                if job is None:
+                    try:
+                        live_latest_scheduled_job = db_queries.scheduled_latest_job_for_plant(
+                            int(selected_plant_id)
+                        )
+                    except Exception as e:
+                        logger.warning("scheduled_latest_job_for_plant: %s", e)
 
     drifts = _sanitize_hourly_drifts_for_json(drifts)
 
@@ -388,6 +499,8 @@ def hourly_results():
         plant_needs_mapping=plant_needs_mapping,
         mysql_diagnostic=None,
         schema_error=None,
+        live_plant_status=live_plant_status,
+        live_latest_scheduled_job=live_latest_scheduled_job,
     )
 
 
@@ -483,6 +596,366 @@ def hourly_result_detail():
         tag=detail["tag"],
         drift_score=detail.get("drift_score"),
         summary=detail.get("summary") or {},
+    )
+
+
+def _live_outlier_results_unreachable(
+    mysql_diagnostic: str | None = None, schema_error: str | None = None
+):
+    return render_template(
+        "live_outlier_results.html",
+        database_enabled=True,
+        db_unreachable=True,
+        mysql_diagnostic=mysql_diagnostic,
+        schema_error=schema_error,
+        job=None,
+        drifts=[],
+        parse_error=None,
+        selected_day_value="",
+        completed_days_iso=[],
+        plants=[],
+        selected_plant_id=None,
+        selected_plant=None,
+        plant_needs_mapping=False,
+        live_plant_status=None,
+        live_latest_scheduled_job=None,
+        has_outlier_day=False,
+        live_outlier_show_catchup=False,
+        obs_first_iso=None,
+        obs_last_iso=None,
+        excel_datasets=[],
+        selected_excel_dataset_id=None,
+        data_source="excel",
+        has_live_outlier_panel=False,
+        active_source_label="",
+        part8_display=None,
+        live_outlier_day_selected=False,
+        analysis_error=None,
+        no_stored_analysis=False,
+    )
+
+
+@bp.route("/live-outlier-results")
+def live_outlier_results():
+    if not is_configured():
+        return render_template(
+            "live_outlier_results.html",
+            database_enabled=False,
+            db_unreachable=False,
+            job=None,
+            drifts=[],
+            parse_error=None,
+            selected_day_value="",
+            completed_days_iso=[],
+            plants=[],
+            selected_plant_id=None,
+            selected_plant=None,
+            plant_needs_mapping=False,
+            mysql_diagnostic=None,
+            schema_error=None,
+            live_plant_status=None,
+            live_latest_scheduled_job=None,
+            has_outlier_day=False,
+            live_outlier_show_catchup=False,
+            obs_first_iso=None,
+            obs_last_iso=None,
+            excel_datasets=[],
+            selected_excel_dataset_id=None,
+            data_source="excel",
+            has_live_outlier_panel=False,
+            active_source_label="",
+            part8_display=None,
+            live_outlier_day_selected=False,
+            analysis_error=None,
+            no_stored_analysis=False,
+        )
+    ok, ping_err = ping_mysql()
+    if not ok:
+        logger.warning("MySQL ping failed (/live-outlier-results): %s", ping_err)
+        return _live_outlier_results_unreachable(mysql_diagnostic=ping_err)
+    try:
+        db_repo.apply_schema_if_needed()
+    except pymysql.err.ProgrammingError as e:
+        logger.warning("MySQL schema apply failed (/live-outlier-results): %s", e)
+        return _live_outlier_results_unreachable(
+            schema_error=str(e),
+            mysql_diagnostic=(
+                "The database answered, but applying db/schema/*.sql failed. "
+                "Often this means a migration was already partially applied or MySQL version mismatch. "
+                "Try: python scripts/init_db.py"
+            ),
+        )
+    except pymysql.err.OperationalError as e:
+        logger.warning("MySQL operational error during schema (/live-outlier-results): %s", e)
+        msg = e.args[1] if len(e.args) > 1 else str(e)
+        return _live_outlier_results_unreachable(
+            mysql_diagnostic=f"During schema update: {msg}",
+        )
+
+    parse_error: str | None = None
+    day_raw = (request.args.get("day") or "").strip()
+    excel_param = request.args.get("excel_dataset", type=int)
+    job: dict | None = None
+    drifts: list = []
+    selected_day_value = ""
+    try:
+        plants = db_queries.list_plants_for_dashboard()
+    except Exception as e:
+        logger.warning("live outlier list plants: %s", e)
+        plants = []
+    excel_datasets: list = []
+    selected_plant_id: int | None = None
+    selected_plant: dict | None = None
+    selected_excel_dataset_id: int | None = None
+    plant_needs_mapping = False
+    data_source: str = "excel"
+    has_live_outlier_panel = False
+    completed_days_iso: list[str] = []
+    live_plant_status: dict | None = None
+    live_latest_scheduled_job: dict | None = None
+    has_outlier_day = False
+    live_outlier_show_catchup = False
+    obs_first_iso: str | None = None
+    obs_last_iso: str | None = None
+    part8_display: dict | None = None
+    live_outlier_day_selected = False
+    analysis_error: str | None = None
+    no_stored_analysis = False
+
+    try:
+        excel_datasets = db_queries.list_live_outlier_excel_datasets()
+    except Exception as e:
+        logger.warning("live outlier list excel datasets: %s", e)
+        excel_datasets = []
+
+    excel_id_set = {int(r["id"]) for r in excel_datasets}
+    if excel_param is not None and excel_param in excel_id_set:
+        selected_excel_dataset_id = excel_param
+    elif excel_datasets:
+        selected_excel_dataset_id = int(excel_datasets[0]["id"])
+
+    selected_day: date | None = None
+
+    if selected_excel_dataset_id is not None:
+        has_live_outlier_panel = True
+        min_o = None
+        max_o = None
+        try:
+            min_o = db_queries.live_outlier_excel_dataset_min_observed_at(
+                int(selected_excel_dataset_id)
+            )
+            max_o = db_queries.live_outlier_excel_dataset_max_observed_at(
+                int(selected_excel_dataset_id)
+            )
+            if min_o is not None:
+                obs_first_iso = floor_day_utc_naive(min_o).date().isoformat()
+            if max_o is not None:
+                obs_last_iso = floor_day_utc_naive(max_o).date().isoformat()
+        except Exception as e:
+            logger.warning("live outlier excel obs bounds: %s", e)
+
+        if max_o is not None:
+            try:
+                obs_days = db_queries.live_outlier_excel_distinct_observation_days(
+                    int(selected_excel_dataset_id)
+                )
+                completed_days_iso = [d.isoformat() for d in obs_days]
+            except Exception as e:
+                logger.warning("live outlier observation days: %s", e)
+                completed_days_iso = []
+
+            if day_raw:
+                try:
+                    picked = date.fromisoformat(day_raw)
+                    selected_day = picked
+                    selected_day_value = picked.isoformat()
+                    live_outlier_day_selected = True
+                except ValueError:
+                    parse_error = "Invalid day. Use the calendar picker (YYYY-MM-DD)."
+                    selected_day_value = day_raw[:10] if len(day_raw) >= 10 else day_raw
+            if selected_day is None:
+                try:
+                    selected_day = floor_day_utc_naive(max_o).date()
+                    selected_day_value = selected_day.isoformat()
+                    live_outlier_day_selected = True
+                except Exception as e:
+                    logger.warning("live outlier latest day: %s", e)
+
+        if selected_day is not None and parse_error is None:
+            part8_light, drifts, has_outlier_day, analysis_error = (
+                build_part8_display_from_stored_analysis(
+                    int(selected_excel_dataset_id), selected_day
+                )
+            )
+            if part8_light:
+                part8_display = part8_light
+            elif (
+                selected_day is not None
+                and parse_error is None
+                and analysis_error is None
+            ):
+                no_stored_analysis = True
+
+    drifts = _sanitize_hourly_drifts_for_json(drifts)
+
+    active_source_label = ""
+    if selected_excel_dataset_id is not None:
+        meta = db_queries.live_outlier_excel_dataset_by_id(int(selected_excel_dataset_id))
+        if meta:
+            active_source_label = str(meta.get("dataset_name") or "")
+
+    return render_template(
+        "live_outlier_results.html",
+        database_enabled=True,
+        db_unreachable=False,
+        job=job,
+        drifts=drifts,
+        parse_error=parse_error,
+        selected_day_value=selected_day_value,
+        completed_days_iso=completed_days_iso,
+        plants=plants,
+        excel_datasets=excel_datasets,
+        selected_plant_id=selected_plant_id,
+        selected_plant=selected_plant,
+        selected_excel_dataset_id=selected_excel_dataset_id,
+        data_source=data_source,
+        has_live_outlier_panel=has_live_outlier_panel,
+        active_source_label=active_source_label,
+        plant_needs_mapping=plant_needs_mapping,
+        mysql_diagnostic=None,
+        schema_error=None,
+        live_plant_status=live_plant_status,
+        live_latest_scheduled_job=live_latest_scheduled_job,
+        has_outlier_day=has_outlier_day,
+        live_outlier_show_catchup=live_outlier_show_catchup,
+        obs_first_iso=obs_first_iso,
+        obs_last_iso=obs_last_iso,
+        part8_display=part8_display,
+        live_outlier_day_selected=live_outlier_day_selected,
+        analysis_error=analysis_error,
+        no_stored_analysis=no_stored_analysis,
+    )
+
+
+@bp.route("/api/live-outlier-results/detail")
+def api_live_outlier_results_detail():
+    excel_id = request.args.get("excel_dataset", type=int)
+    tag = (request.args.get("tag") or "").strip()
+    compare = [str(c).strip() for c in request.args.getlist("compare") if c and str(c).strip()]
+    day_raw = (request.args.get("day") or "").strip()
+    if not excel_id or not tag:
+        return jsonify({"error": "missing excel_dataset or tag"}), 400
+    if day_raw:
+        try:
+            selected_day = date.fromisoformat(day_raw)
+        except ValueError:
+            return jsonify({"error": "invalid day format; expected YYYY-MM-DD"}), 400
+    else:
+        max_o = db_queries.live_outlier_excel_dataset_max_observed_at(int(excel_id))
+        if max_o is None:
+            return jsonify({"error": "no observations for this dataset"}), 400
+        selected_day = floor_day_utc_naive(max_o).date()
+    try:
+        detail = build_live_outlier_excel_day_tag_detail(
+            excel_id,
+            selected_day,
+            tag,
+            selected_day=selected_day,
+            compare_tags=compare,
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.exception("api_live_outlier_results_detail failed: %s", e)
+        return jsonify({"error": "Failed to build detail"}), 500
+    return jsonify(
+        {
+            "tag": detail["tag"],
+            "drift_score": detail.get("drift_score"),
+            "roots": jsonable(detail.get("roots") or []),
+            "roots_error": detail.get("roots_error"),
+            "plot": json.loads(detail["plot_json"]),
+        }
+    )
+
+
+@bp.route("/live-outlier-results/detail")
+def live_outlier_result_detail():
+    excel_id = request.args.get("excel_dataset", type=int)
+    tag = (request.args.get("tag") or "").strip()
+    day_raw = (request.args.get("day") or "").strip()
+    base_kw = dict(
+        database_enabled=is_configured(),
+        db_unreachable=False,
+        error=None,
+        job=None,
+        plot_json=None,
+        roots=None,
+        roots_error=None,
+        tag="",
+        drift_score=None,
+        summary=None,
+        detail_day_iso=None,
+        detail_plant_id=None,
+        detail_excel_dataset_id=None,
+        data_source="excel",
+    )
+    if not is_configured():
+        return render_template(
+            "live_outlier_result_detail.html", **base_kw, database_enabled=False
+        )
+    try:
+        db_repo.apply_schema_if_needed()
+    except pymysql.err.OperationalError as e:
+        logger.warning("MySQL unreachable (/live-outlier-results/detail): %s", e)
+        return render_template("live_outlier_result_detail.html", **base_kw, db_unreachable=True)
+
+    if not tag or not day_raw or not excel_id:
+        return render_template(
+            "live_outlier_result_detail.html",
+            **base_kw,
+            error="Missing excel_dataset, tag, or day. Open this page from Live Outlier detection.",
+        )
+    try:
+        selected_day = date.fromisoformat(day_raw)
+    except ValueError:
+        return render_template(
+            "live_outlier_result_detail.html",
+            **base_kw,
+            error="Invalid day format.",
+        )
+
+    try:
+        detail = build_live_outlier_excel_day_tag_detail(
+            excel_id, selected_day, tag, selected_day=selected_day
+        )
+        data_source = "excel"
+    except ValueError as e:
+        return render_template("live_outlier_result_detail.html", **base_kw, error=str(e))
+    except Exception as e:
+        logger.exception("live_outlier_result_detail failed: %s", e)
+        return render_template(
+            "live_outlier_result_detail.html",
+            **base_kw,
+            error="Could not build detail view. Check logs.",
+        )
+
+    return render_template(
+        "live_outlier_result_detail.html",
+        database_enabled=True,
+        db_unreachable=False,
+        error=None,
+        job=detail["job"],
+        plot_json=detail["plot_json"],
+        roots=detail["roots"],
+        roots_error=detail.get("roots_error"),
+        tag=detail["tag"],
+        drift_score=detail.get("drift_score"),
+        summary=detail.get("summary") or {},
+        detail_day_iso=day_raw.strip(),
+        detail_plant_id=None,
+        detail_excel_dataset_id=excel_id,
+        data_source=data_source,
     )
 
 
@@ -869,6 +1342,164 @@ def api_dataset_upload():
     return jsonify(body), status
 
 
+def _outlier_excel_upload_form_error(message: str):
+    return render_template(
+        "outlier_excel_upload.html",
+        database_enabled=is_configured(),
+        db_unreachable=False,
+        message=message,
+        message_kind="danger",
+    )
+
+
+@bp.route("/outlier-excel-upload", methods=["GET", "POST"])
+def outlier_excel_upload_page():
+    """Dataset name + wide time-series .xlsx → ``live_outlier_excel_dataset`` + observations."""
+    if not is_configured():
+        return render_template(
+            "outlier_excel_upload.html",
+            database_enabled=False,
+            db_unreachable=False,
+            message=None,
+            message_kind=None,
+        )
+    try:
+        db_repo.apply_schema_if_needed()
+    except pymysql.err.OperationalError as e:
+        logger.warning("MySQL unreachable (/outlier-excel-upload): %s", e)
+        return render_template(
+            "outlier_excel_upload.html",
+            database_enabled=True,
+            db_unreachable=True,
+            message=None,
+            message_kind=None,
+        )
+
+    if request.method == "GET":
+        return render_template(
+            "outlier_excel_upload.html",
+            database_enabled=True,
+            db_unreachable=False,
+            message=None,
+            message_kind=None,
+        )
+
+    dataset_name = (request.form.get("dataset_name") or "").strip()
+    ts_file = request.files.get("time_series_xlsx")
+    if not ts_file or not getattr(ts_file, "filename", None):
+        return _outlier_excel_upload_form_error("Excel file is required.")
+
+    try:
+        validate_excel_filename(ts_file.filename)
+    except ValueError as e:
+        return _outlier_excel_upload_form_error(str(e))
+
+    try:
+        ts_bytes = ts_file.read()
+    except Exception as e:
+        return _outlier_excel_upload_form_error(f"Could not read uploaded file: {e}")
+
+    result = insert_live_outlier_excel_upload(
+        dataset_name,
+        ts_bytes,
+        ts_file.filename or "timeseries.xlsx",
+    )
+    if not result["success"]:
+        return render_template(
+            "outlier_excel_upload.html",
+            database_enabled=True,
+            db_unreachable=False,
+            message=result["message"],
+            message_kind="danger",
+        )
+
+    return render_template(
+        "outlier_excel_upload.html",
+        database_enabled=True,
+        db_unreachable=False,
+        message=result["message"],
+        message_kind="success",
+    )
+
+
+@bp.route("/api/outlier-excel-upload", methods=["POST"])
+def api_outlier_excel_upload():
+    if not is_configured():
+        return jsonify(
+            {
+                "success": False,
+                "dataset_id": None,
+                "message": "Database is not configured (set DATABASE_URL).",
+                "error_code": "no_database",
+            }
+        ), 503
+    try:
+        db_repo.apply_schema_if_needed()
+    except pymysql.err.OperationalError as e:
+        logger.warning("MySQL unreachable (/api/outlier-excel-upload): %s", e)
+        return jsonify(
+            {
+                "success": False,
+                "dataset_id": None,
+                "message": "Cannot connect to MySQL.",
+                "error_code": "db_unreachable",
+            }
+        ), 503
+
+    dataset_name = (request.form.get("dataset_name") or "").strip()
+    ts_file = request.files.get("time_series_xlsx")
+    if not ts_file or not getattr(ts_file, "filename", None):
+        return jsonify(
+            {
+                "success": False,
+                "dataset_id": None,
+                "message": "Missing file field time_series_xlsx.",
+                "error_code": "validation",
+            }
+        ), 400
+    try:
+        validate_excel_filename(ts_file.filename)
+    except ValueError as e:
+        return jsonify(
+            {
+                "success": False,
+                "dataset_id": None,
+                "message": str(e),
+                "error_code": "validation",
+            }
+        ), 400
+    try:
+        ts_bytes = ts_file.read()
+    except Exception as e:
+        return jsonify(
+            {
+                "success": False,
+                "dataset_id": None,
+                "message": f"Could not read upload: {e}",
+                "error_code": "validation",
+            }
+        ), 400
+
+    result = insert_live_outlier_excel_upload(
+        dataset_name,
+        ts_bytes,
+        ts_file.filename or "timeseries.xlsx",
+    )
+    code = result.get("error_code")
+    status = 200 if result.get("success") else (400 if code in ("validation", "no_database") else 500)
+    return (
+        jsonify(
+            {
+                "success": bool(result.get("success")),
+                "dataset_id": result.get("dataset_id"),
+                "message": result.get("message"),
+                "error_code": result.get("error_code"),
+            }
+        ),
+        status,
+    )
+
+
 @bp.route("/part2/drift-causes", methods=["POST"])
 def part2_drift_causes():
     causal_model_xlsx = request.files.get("causal_model_xlsx")
@@ -905,10 +1536,12 @@ def part2_drift_causes():
         causal_id = db_repo.persist_causal_xlsx(
             causal_model_path, causal_model_xlsx.filename or "causal.xlsx"
         )
+        plant_id = db_queries.find_plant_dataset_id_for_links(ts_id, causal_id)
         db_repo.persist_anomaly_run(
             result_session_uuid=result_id,
             timeseries_dataset_id=ts_id,
             causal_dataset_id=causal_id,
+            plant_dataset_id=plant_id,
             historic_ratio=historic_ratio,
             lookback_months=lookback_months,
             top_k_drift=top_k_drift,
@@ -1048,6 +1681,27 @@ def api_part3_plot(result_id: str):
     return Response(fig.to_json(), mimetype="application/json")
 
 
+@bp.route("/api/part4/plot/<result_id>")
+def api_part4_plot(result_id: str):
+    tag = (request.args.get("tag") or "").strip()
+    if not tag:
+        return jsonify({"error": "missing tag"}), 400
+    compare = [c.strip() for c in request.args.getlist("compare") if c and str(c).strip()]
+    ctx = part3_load(result_id)
+    if not ctx:
+        return jsonify({"error": "expired or invalid session"}), 404
+    try:
+        fig = build_plot_figure_for_tag(
+            ctx["df_for_script"],
+            ctx["out_df"],
+            tag,
+            compare_tags=compare,
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return Response(fig.to_json(), mimetype="application/json")
+
+
 @bp.route("/part3/drift-detection", methods=["POST"])
 def part3_drift_detection():
     drift_xlsx = request.files.get("drift_xlsx")
@@ -1071,9 +1725,11 @@ def part3_drift_detection():
         ts_id = db_repo.persist_timeseries_xlsx(
             drift_xlsx_path, drift_xlsx.filename or "outlier.xlsx"
         )
+        plant_id = db_queries.find_plant_dataset_id_for_links(ts_id, None)
         db_repo.persist_outlier_run(
             result_session_uuid=result_id,
             timeseries_dataset_id=ts_id,
+            plant_dataset_id=plant_id,
             tag_summaries=result.get("tag_summaries") or [],
             details_by_tag=result.get("details_by_tag") or {},
             monthly_pages_by_tag=result.get("monthly_pages_by_tag") or {},
@@ -1104,6 +1760,380 @@ def part3_drift_detection():
             "monthly_pages_by_tag": result["monthly_pages_by_tag"],
         },
         active_tab="part3",
+        database_enabled=is_configured(),
+    )
+
+
+@bp.route("/docs/workflow-comparison-no-causal-v5-v6.xlsx", methods=["GET"])
+def download_workflow_comparison_matrix():
+    """Static matrices: logic, signals, class crosswalk, UI mapping, merge how-to."""
+    from services.workflow_comparison_excel import build_workbook_bytes
+
+    payload, download_name = build_workbook_bytes()
+    return Response(
+        payload,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{download_name}"',
+            "Cache-Control": "no-cache",
+        },
+    )
+
+
+@bp.route("/docs/auto-workflow/<workflow>", methods=["GET"])
+def download_auto_workflow_doc(workflow: str):
+    """Methodology for auto workflows (parts 4–10): Word .docx, or Word HTML .doc if docx unavailable."""
+    key = (workflow or "").strip().lower()
+    if key not in AUTO_WORKFLOW_DOCS:
+        abort(404)
+    filename, body = AUTO_WORKFLOW_DOCS[key]
+    from services.methodology_docx import build_methodology_download
+
+    payload, out_filename, mimetype = build_methodology_download(body, filename)
+    if out_filename.endswith(".doc"):
+        logger.info("Methodology served as Word HTML .doc (install python-docx for native .docx).")
+    return Response(
+        payload,
+        mimetype=mimetype,
+        headers={
+            "Content-Disposition": f'attachment; filename="{out_filename}"',
+            "Cache-Control": "no-cache",
+        },
+    )
+
+
+@bp.route("/part4/auto-without-causal", methods=["POST"])
+def part4_auto_without_causal():
+    drift_xlsx = request.files.get("auto_drift_xlsx")
+    if not drift_xlsx:
+        return _render_index(active_tab="part4", error="Missing file: auto_drift_xlsx")
+
+    drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
+    result = run_auto_without_causal_outlier_drift(drift_xlsx_path)
+
+    df_for_script = result.pop("df_for_script")
+    out_df = result.pop("out_df")
+    result_id = uuid.uuid4().hex
+    export_payload = {
+        "tag_summaries": result.get("tag_summaries") or [],
+        "details_by_tag": result.get("details_by_tag") or {},
+        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+    }
+    part3_store(result_id, df_for_script, out_df, export_payload=export_payload)
+
+    session["last_workflow"] = "outlier"
+    session.modified = True
+
+    return render_template(
+        "results.html",
+        part2=None,
+        part3=None,
+        part4={
+            "result_id": result_id,
+            "summary": result.get("summary") or {},
+            "top_tags_by_points": result.get("top_tags_by_points") or [],
+            "tag_names": [t.get("tag") for t in (result.get("tag_summaries") or []) if t.get("tag")],
+            "all_plot_tags": sorted(c for c in df_for_script.columns if c != "Timestamp"),
+            "tag_summaries": result.get("tag_summaries") or [],
+            "drift_points_by_tag": {
+                str(t.get("tag")): int(t.get("num_drift_points") or 0)
+                for t in (result.get("tag_summaries") or [])
+                if t.get("tag")
+            },
+            "details_by_tag": result.get("details_by_tag") or {},
+            "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+            "tag_limits_by_tag": result.get("tag_limits_by_tag") or {},
+            "x_variables_by_tag": result.get("x_variables_by_tag") or {},
+        },
+        active_tab="part4",
+        database_enabled=is_configured(),
+    )
+
+
+@bp.route("/part5/auto-without-clean-data", methods=["POST"])
+def part5_auto_without_clean_data():
+    drift_xlsx = request.files.get("auto_no_clean_drift_xlsx")
+    if not drift_xlsx:
+        return _render_index(active_tab="part5", error="Missing file: auto_no_clean_drift_xlsx")
+
+    drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
+    result = run_without_clean_data_outlier_drift(drift_xlsx_path)
+
+    df_for_script = result.pop("df_for_script")
+    out_df = result.pop("out_df")
+    result_id = uuid.uuid4().hex
+    export_payload = {
+        "tag_summaries": result.get("tag_summaries") or [],
+        "details_by_tag": result.get("details_by_tag") or {},
+        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+    }
+    part3_store(result_id, df_for_script, out_df, export_payload=export_payload)
+
+    session["last_workflow"] = "outlier"
+    session.modified = True
+
+    return render_template(
+        "results.html",
+        part2=None,
+        part3=None,
+        part4={
+            "result_id": result_id,
+            "summary": result.get("summary") or {},
+            "top_tags_by_points": result.get("top_tags_by_points") or [],
+            "tag_names": [t.get("tag") for t in (result.get("tag_summaries") or []) if t.get("tag")],
+            "all_plot_tags": sorted(c for c in df_for_script.columns if c != "Timestamp"),
+            "tag_summaries": result.get("tag_summaries") or [],
+            "drift_points_by_tag": {
+                str(t.get("tag")): int(t.get("num_drift_points") or 0)
+                for t in (result.get("tag_summaries") or [])
+                if t.get("tag")
+            },
+            "details_by_tag": result.get("details_by_tag") or {},
+            "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+            "tag_limits_by_tag": result.get("tag_limits_by_tag") or {},
+            "x_variables_by_tag": result.get("x_variables_by_tag") or {},
+        },
+        active_tab="part5",
+        database_enabled=is_configured(),
+    )
+
+
+@bp.route("/part6/auto-identification", methods=["POST"])
+def part6_auto_identification():
+    drift_xlsx = request.files.get("auto_identification_xlsx")
+    if not drift_xlsx:
+        return _render_index(active_tab="part6", error="Missing file: auto_identification_xlsx")
+
+    drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
+    result = run_auto_identification_outlier_drift(drift_xlsx_path)
+
+    df_for_script = result.pop("df_for_script")
+    out_df = result.pop("out_df")
+    result_id = uuid.uuid4().hex
+    export_payload = {
+        "tag_summaries": result.get("tag_summaries") or [],
+        "details_by_tag": result.get("details_by_tag") or {},
+        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+    }
+    part3_store(result_id, df_for_script, out_df, export_payload=export_payload)
+
+    session["last_workflow"] = "outlier"
+    session.modified = True
+
+    return render_template(
+        "results.html",
+        part2=None,
+        part3=None,
+        part4={
+            "result_id": result_id,
+            "summary": result.get("summary") or {},
+            "top_tags_by_points": result.get("top_tags_by_points") or [],
+            "tag_names": [t.get("tag") for t in (result.get("tag_summaries") or []) if t.get("tag")],
+            "all_plot_tags": sorted(c for c in df_for_script.columns if c != "Timestamp"),
+            "tag_summaries": result.get("tag_summaries") or [],
+            "drift_points_by_tag": {
+                str(t.get("tag")): int(t.get("num_drift_points") or 0)
+                for t in (result.get("tag_summaries") or [])
+                if t.get("tag")
+            },
+            "details_by_tag": result.get("details_by_tag") or {},
+            "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+            "tag_limits_by_tag": result.get("tag_limits_by_tag") or {},
+            "x_variables_by_tag": result.get("x_variables_by_tag") or {},
+        },
+        active_tab="part6",
+        database_enabled=is_configured(),
+    )
+
+
+@bp.route("/part7/auto-testing-deviation-spike-v4", methods=["POST"])
+def part7_auto_testing_deviation_spike_v4():
+    drift_xlsx = request.files.get("auto_testing_v4_xlsx")
+    if not drift_xlsx:
+        return _render_index(active_tab="part7", error="Missing file: auto_testing_v4_xlsx")
+
+    drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
+    result = run_testing_deviation_spike_v4_outlier_drift(drift_xlsx_path)
+
+    df_for_script = result.pop("df_for_script")
+    out_df = result.pop("out_df")
+    result_id = uuid.uuid4().hex
+    export_payload = {
+        "tag_summaries": result.get("tag_summaries") or [],
+        "details_by_tag": result.get("details_by_tag") or {},
+        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+    }
+    part3_store(result_id, df_for_script, out_df, export_payload=export_payload)
+
+    session["last_workflow"] = "outlier"
+    session.modified = True
+
+    return render_template(
+        "results.html",
+        part2=None,
+        part3=None,
+        part4={
+            "result_id": result_id,
+            "summary": result.get("summary") or {},
+            "top_tags_by_points": result.get("top_tags_by_points") or [],
+            "tag_names": [t.get("tag") for t in (result.get("tag_summaries") or []) if t.get("tag")],
+            "all_plot_tags": sorted(c for c in df_for_script.columns if c != "Timestamp"),
+            "tag_summaries": result.get("tag_summaries") or [],
+            "drift_points_by_tag": {
+                str(t.get("tag")): int(t.get("num_drift_points") or 0)
+                for t in (result.get("tag_summaries") or [])
+                if t.get("tag")
+            },
+            "details_by_tag": result.get("details_by_tag") or {},
+            "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+            "tag_limits_by_tag": result.get("tag_limits_by_tag") or {},
+            "x_variables_by_tag": result.get("x_variables_by_tag") or {},
+        },
+        active_tab="part7",
+        database_enabled=is_configured(),
+    )
+
+
+@bp.route("/part8/auto-testing-deviation-spike-v5", methods=["POST"])
+def part8_auto_testing_deviation_spike_v5():
+    drift_xlsx = request.files.get("auto_testing_v5_xlsx")
+    if not drift_xlsx:
+        return _render_index(active_tab="part8", error="Missing file: auto_testing_v5_xlsx")
+
+    drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
+    result = run_testing_deviation_spike_v5_outlier_drift(drift_xlsx_path)
+
+    df_for_script = result.pop("df_for_script")
+    out_df = result.pop("out_df")
+    result_id = uuid.uuid4().hex
+    export_payload = {
+        "tag_summaries": result.get("tag_summaries") or [],
+        "details_by_tag": result.get("details_by_tag") or {},
+        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+    }
+    part3_store(result_id, df_for_script, out_df, export_payload=export_payload)
+
+    session["last_workflow"] = "outlier"
+    session.modified = True
+
+    return render_template(
+        "results.html",
+        part2=None,
+        part3=None,
+        part4={
+            "result_id": result_id,
+            "summary": result.get("summary") or {},
+            "top_tags_by_points": result.get("top_tags_by_points") or [],
+            "tag_names": [t.get("tag") for t in (result.get("tag_summaries") or []) if t.get("tag")],
+            "all_plot_tags": sorted(c for c in df_for_script.columns if c != "Timestamp"),
+            "tag_summaries": result.get("tag_summaries") or [],
+            "drift_points_by_tag": {
+                str(t.get("tag")): int(t.get("num_drift_points") or 0)
+                for t in (result.get("tag_summaries") or [])
+                if t.get("tag")
+            },
+            "details_by_tag": result.get("details_by_tag") or {},
+            "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+            "tag_limits_by_tag": result.get("tag_limits_by_tag") or {},
+            "x_variables_by_tag": result.get("x_variables_by_tag") or {},
+        },
+        active_tab="part8",
+        database_enabled=is_configured(),
+    )
+
+
+@bp.route("/part9/auto-testing-top5-corr-regression-v6", methods=["POST"])
+def part9_auto_testing_top5_corr_regression_v6():
+    drift_xlsx = request.files.get("auto_testing_v6_xlsx")
+    if not drift_xlsx:
+        return _render_index(active_tab="part9", error="Missing file: auto_testing_v6_xlsx")
+
+    drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
+    result = run_testing_top5_corr_regression_outlier_drift(drift_xlsx_path)
+
+    df_for_script = result.pop("df_for_script")
+    out_df = result.pop("out_df")
+    result_id = uuid.uuid4().hex
+    export_payload = {
+        "tag_summaries": result.get("tag_summaries") or [],
+        "details_by_tag": result.get("details_by_tag") or {},
+        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+    }
+    part3_store(result_id, df_for_script, out_df, export_payload=export_payload)
+
+    session["last_workflow"] = "outlier"
+    session.modified = True
+
+    return render_template(
+        "results.html",
+        part2=None,
+        part3=None,
+        part4={
+            "result_id": result_id,
+            "summary": result.get("summary") or {},
+            "top_tags_by_points": result.get("top_tags_by_points") or [],
+            "tag_names": [t.get("tag") for t in (result.get("tag_summaries") or []) if t.get("tag")],
+            "all_plot_tags": sorted(c for c in df_for_script.columns if c != "Timestamp"),
+            "tag_summaries": result.get("tag_summaries") or [],
+            "drift_points_by_tag": {
+                str(t.get("tag")): int(t.get("num_drift_points") or 0)
+                for t in (result.get("tag_summaries") or [])
+                if t.get("tag")
+            },
+            "details_by_tag": result.get("details_by_tag") or {},
+            "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+            "tag_limits_by_tag": result.get("tag_limits_by_tag") or {},
+            "x_variables_by_tag": result.get("x_variables_by_tag") or {},
+        },
+        active_tab="part9",
+        database_enabled=is_configured(),
+    )
+
+
+@bp.route("/part10/auto-testing-fusion-v7", methods=["POST"])
+def part10_auto_testing_fusion_v7():
+    drift_xlsx = request.files.get("auto_testing_v7_xlsx")
+    if not drift_xlsx:
+        return _render_index(active_tab="part10", error="Missing file: auto_testing_v7_xlsx")
+
+    drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
+    result = run_testing_fusion_v7_outlier_drift(drift_xlsx_path)
+
+    df_for_script = result.pop("df_for_script")
+    out_df = result.pop("out_df")
+    result_id = uuid.uuid4().hex
+    export_payload = {
+        "tag_summaries": result.get("tag_summaries") or [],
+        "details_by_tag": result.get("details_by_tag") or {},
+        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+    }
+    part3_store(result_id, df_for_script, out_df, export_payload=export_payload)
+
+    session["last_workflow"] = "outlier"
+    session.modified = True
+
+    return render_template(
+        "results.html",
+        part2=None,
+        part3=None,
+        part4={
+            "result_id": result_id,
+            "summary": result.get("summary") or {},
+            "top_tags_by_points": result.get("top_tags_by_points") or [],
+            "tag_names": [t.get("tag") for t in (result.get("tag_summaries") or []) if t.get("tag")],
+            "all_plot_tags": sorted(c for c in df_for_script.columns if c != "Timestamp"),
+            "tag_summaries": result.get("tag_summaries") or [],
+            "drift_points_by_tag": {
+                str(t.get("tag")): int(t.get("num_drift_points") or 0)
+                for t in (result.get("tag_summaries") or [])
+                if t.get("tag")
+            },
+            "details_by_tag": result.get("details_by_tag") or {},
+            "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+            "tag_limits_by_tag": result.get("tag_limits_by_tag") or {},
+            "x_variables_by_tag": result.get("x_variables_by_tag") or {},
+        },
+        active_tab="part10",
         database_enabled=is_configured(),
     )
 

@@ -7,27 +7,6 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-  <style>
-    .dashboard-workflow-grid-3,
-    .dashboard-workflow-grid-2 {
-      display: grid;
-      gap: 1rem;
-    }
-    .dashboard-workflow-grid-3 { grid-template-columns: repeat(1, minmax(0, 1fr)); }
-    .dashboard-workflow-grid-2 { grid-template-columns: repeat(1, minmax(0, 1fr)); }
-    @media (min-width: 992px) {
-      .dashboard-workflow-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-      .dashboard-workflow-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
-    .dashboard-metrics-grid {
-      display: grid;
-      gap: 1rem;
-      grid-template-columns: repeat(1, minmax(0, 1fr));
-    }
-    @media (min-width: 992px) {
-      .dashboard-metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    }
-  </style>
 </head>
 <body class="dashboard-body">
   <div class="layout">
@@ -36,18 +15,24 @@
       <nav class="sidebar-nav">
         <a class="sidebar-link active" href="{{ url_for('main.overview_dashboard') }}">Dashboard</a>
         {% if database_enabled %}
-        <a class="sidebar-link" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
+        <a class="sidebar-link" href="{{ url_for('main.live_outlier_results') }}">Live Outlier detection</a>
         {% endif %}
-        <a class="sidebar-link" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
-        <a class="sidebar-link" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
+        <a class="sidebar-link" href="{{ url_for('main.index', tab='part4') }}">Auto (No Causal)</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part5') }}">Auto (No Clean Data)</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part6') }}">Auto Identification</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part7') }}">Testing (V4)</a>
+        <a class="sidebar-link" href="{{ url_for('main.index', tab='part8') }}">Outlier detection</a>
+        <a class="sidebar-link" href="{{ url_for('main.index', tab='part9') }}">Outlier detection (using data model)</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part10') }}">Testing (V7)</a>
         {% if database_enabled %}
-        <a class="sidebar-link" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
-        <a class="sidebar-link" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
+        <a class="sidebar-link {% if request.endpoint == 'main.outlier_excel_upload_page' %}active{% endif %}" href="{{ url_for('main.outlier_excel_upload_page') }}">Live outlier data upload</a>
         {% endif %}
       </nav>
-      <div class="sidebar-help text-muted">
-        Unified view of data health, scheduled jobs, and workflows. Use the cards below to jump into each module.
-      </div>
     </aside>
 
     <main class="main dashboard-main">
@@ -72,121 +57,49 @@
             <h2 class="h5 mb-2">Connect MySQL</h2>
             <p class="text-muted small mb-3">
               Set <code>DATABASE_URL=mysql://user:pass@127.0.0.1:3306/anomaly</code> in <code>.env</code>, then run
-              <code>python scripts/init_db.py</code>. Live Dashboard, data browse, and uploads unlock automatically.
+              <code>python scripts/init_db.py</code>. Data browse and uploads unlock automatically.
             </p>
-            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.index', tab='part2') }}">Continue with Offline VC</a>
+            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.index', tab='part4') }}">Continue with Auto (No Causal)</a>
           </div>
         </div>
       {% endif %}
 
-      {% set d = dash or {} %}
       {% set db_ok = database_enabled and db_reachable %}
-      <section class="dashboard-section mb-4" aria-label="Modules">
-        <h2 class="dashboard-section-title h6 text-uppercase text-muted mb-3">Workflows</h2>
-        <div class="dashboard-workflow-grid-3 mb-3">
-          <div>
-            <a href="{{ url_for('main.hourly_results') }}" class="dashboard-module card h-100 border-0 shadow-sm text-decoration-none {% if not db_ok %}opacity-75{% endif %}">
-              <div class="card-body">
-                <div class="dashboard-module-icon">◉</div>
-                <h3 class="h5 text-dark">Live Dashboard</h3>
-                <p class="text-muted small mb-3">Per-plant drift results, daily buckets, and tag-level plots from scheduled runs.</p>
-                <span class="dashboard-module-cta">Open</span>
-              </div>
-            </a>
-          </div>
-          <div>
-            <a href="{{ url_for('main.index', tab='part2') }}" class="dashboard-module card h-100 border-0 shadow-sm text-decoration-none">
-              <div class="card-body">
-                <div class="dashboard-module-icon">◇</div>
-                <h3 class="h5 text-dark">Offline VC</h3>
-                <p class="text-muted small mb-3">Upload causal matrix + time series; drift phase and root-cause exploration.</p>
-                <span class="dashboard-module-cta">Open</span>
-              </div>
-            </a>
-          </div>
-          <div>
-            <a href="{{ url_for('main.index', tab='part3') }}" class="dashboard-module card h-100 border-0 shadow-sm text-decoration-none">
-              <div class="card-body">
-                <div class="dashboard-module-icon">△</div>
-                <h3 class="h5 text-dark">Drift Detection</h3>
-                <p class="text-muted small mb-3">Standalone drift analysis workflow on uploaded series.</p>
-                <span class="dashboard-module-cta">Open</span>
-              </div>
-            </a>
-          </div>
-        </div>
-
-      </section>
-
       {% if db_ok %}
-        <section class="dashboard-section mb-4" aria-label="Key metrics">
-          {% set ts_val = d.get('ts_datasets', 0) or 0 %}
-          {% set causal_val = d.get('causal_datasets', 0) or 0 %}
-          {% set plants_val = d.get('plants_total', 0) or 0 %}
-          {% set max_metric = [ts_val, causal_val, plants_val, 1] | max %}
-          <div class="dashboard-metrics-grid">
-            <div>
-              <div class="dashboard-stat card h-100 border-0 shadow-sm">
-                <div class="card-body">
-                  <p class="dashboard-stat-label">Time-series datasets</p>
-                  <p class="dashboard-stat-value">{{ ts_val }}</p>
-                  <div class="progress dashboard-metric-progress mb-2" role="progressbar" aria-label="Time-series datasets">
-                    <div class="progress-bar bg-danger-subtle" style="width: {{ (ts_val * 100 / max_metric) | round(0, 'ceil') | int }}%"></div>
-                  </div>
-                  <p class="dashboard-stat-hint text-muted small mb-0">{{ "{:,}".format(d.get('ts_observation_rows', 0) or 0) }} observation rows · {{ "{:,}".format(d.get('ts_wide_rows_sum', 0) or 0) }} wide rows (sum)</p>
+        <section class="dashboard-section mb-4" aria-label="Live Outlier datasets">
+          <h2 class="dashboard-section-title h6 text-uppercase text-muted mb-3">Live Outlier detection — uploaded datasets</h2>
+          {% if live_outlier_datasets and live_outlier_datasets|length > 0 %}
+            <div class="dashboard-dataset-grid">
+              {% for row in live_outlier_datasets %}
+              <a
+                href="{{ url_for('main.live_outlier_results', excel_dataset=row.id) }}"
+                class="dashboard-module card h-100 border-0 shadow-sm text-decoration-none text-body"
+              >
+                <div class="card-body d-flex flex-column">
+                  <div class="dashboard-module-icon" aria-hidden="true">▤</div>
+                  <h3 class="text-dark">{{ row.dataset_name }}</h3>
+                  <p class="text-muted small text-break mb-2">{{ row.original_filename }}</p>
+                  <p class="text-muted small mb-0 mt-auto">
+                    <span class="d-block text-uppercase fw-bold" style="font-size: 0.65rem; letter-spacing: 0.06em;">Uploaded</span>
+                    {{ row.uploaded_at }}
+                  </p>
+                  <span class="dashboard-module-cta d-inline-block mt-3">Open in Live Outlier</span>
                 </div>
+              </a>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="card border-0 shadow-sm">
+              <div class="card-body d-flex flex-wrap align-items-center justify-content-between gap-3">
+                <div>
+                  <h3 class="h6 mb-1">No Live Outlier Excel datasets</h3>
+                  <p class="text-muted small mb-0">Upload a wide-format time series (.xlsx) to use Live Outlier detection.</p>
+                </div>
+                <a class="btn btn-sm btn-primary" href="{{ url_for('main.outlier_excel_upload_page') }}">Live outlier data upload</a>
               </div>
             </div>
-            <div>
-              <div class="dashboard-stat card h-100 border-0 shadow-sm">
-                <div class="card-body">
-                  <p class="dashboard-stat-label">Causal library</p>
-                  <p class="dashboard-stat-value">{{ causal_val }}</p>
-                  <div class="progress dashboard-metric-progress mb-2" role="progressbar" aria-label="Causal library">
-                    <div class="progress-bar bg-danger-subtle" style="width: {{ (causal_val * 100 / max_metric) | round(0, 'ceil') | int }}%"></div>
-                  </div>
-                  <p class="dashboard-stat-hint text-muted small mb-0">{{ "{:,}".format(d.get('causal_rows', 0) or 0) }} stored causal rows</p>
-                </div>
-              </div>
-            </div>
-            <div>
-              <div class="dashboard-stat card h-100 border-0 shadow-sm">
-                <div class="card-body">
-                  <p class="dashboard-stat-label">Plants</p>
-                  <p class="dashboard-stat-value">{{ plants_val }}</p>
-                  <div class="progress dashboard-metric-progress mb-2" role="progressbar" aria-label="Plants">
-                    <div class="progress-bar bg-danger-subtle" style="width: {{ (plants_val * 100 / max_metric) | round(0, 'ceil') | int }}%"></div>
-                  </div>
-                  <p class="dashboard-stat-hint text-muted small mb-0">{{ d.get('plants_ready', 0) }} mapped for live scheduling</p>
-                </div>
-              </div>
-            </div>
-          </div>
+          {% endif %}
         </section>
-
-        {% if d.get('plants_total', 0) == 0 %}
-          <div class="dashboard-empty-state card border-0 shadow-sm border-start border-4 border-danger mb-4">
-            <div class="card-body d-flex flex-wrap align-items-center justify-content-between gap-3">
-              <div>
-                <h3 class="h6 mb-1">No plants defined</h3>
-                <p class="text-muted small mb-0">Add plants via Dataset Upload and map legacy dataset IDs for the Live Dashboard.</p>
-              </div>
-              <a class="btn btn-sm btn-primary" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
-            </div>
-          </div>
-        {% endif %}
-
-        {% if d.get('ts_datasets', 0) == 0 and d.get('causal_datasets', 0) == 0 %}
-          <div class="dashboard-empty-state card border-0 shadow-sm mb-4">
-            <div class="card-body d-flex flex-wrap align-items-center justify-content-between gap-3">
-              <div>
-                <h3 class="h6 mb-1">Data library is empty</h3>
-                <p class="text-muted small mb-0">Run Drift Detection or Offline VC with uploads to populate MySQL datasets.</p>
-              </div>
-              <a class="btn btn-sm btn-outline-primary" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
-            </div>
-          </div>
-        {% endif %}
       {% endif %}
 
       {% if has_causal_matrix_context %}

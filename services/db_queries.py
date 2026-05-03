@@ -11,6 +11,9 @@ from .db_config import get_connection, is_configured
 
 PAGE_SIZE = 50
 
+# Chunk keyset reads on live_outlier_analysis_detail (avoids huge single-result sorts / 1038).
+_LIVE_OUTLIER_DETAIL_CHUNK = 50_000
+
 # Only alphanumeric + underscore table names are browseable (SQL identifier safety).
 _BROWSE_TABLE_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 
@@ -136,10 +139,11 @@ def list_timeseries_observations_page(
             total = int(cur.fetchone()[0])
             page = _clamp_page(page, total, per_page)
             offset = (page - 1) * per_page
+            # FORCE INDEX (uq_timeseries_obs): (dataset_id, row_index, tag_name) matches ORDER BY → no filesort (1038).
             cur.execute(
                 """
                 SELECT id, row_index, observed_at, observed_at_raw, tag_name, value
-                FROM timeseries_observation
+                FROM timeseries_observation FORCE INDEX (uq_timeseries_obs)
                 WHERE dataset_id = %s
                 ORDER BY row_index ASC, tag_name ASC
                 LIMIT %s OFFSET %s
@@ -167,11 +171,13 @@ def list_timeseries_observations_global_page(
             total = int(cur.fetchone()[0])
             page = _clamp_page(page, total, per_page)
             offset = (page - 1) * per_page
+            # ORDER BY primary key only: global sort by (dataset_id, row_index, tag) needs a full-table filesort
+            # and triggers errno 1038 on large tables. Rows are shown in reverse insert order (newest first).
             cur.execute(
                 """
                 SELECT o.dataset_id, o.row_index, o.observed_at, o.observed_at_raw, o.tag_name, o.value
                 FROM timeseries_observation o
-                ORDER BY o.dataset_id DESC, o.row_index ASC, o.tag_name ASC
+                ORDER BY o.id DESC
                 LIMIT %s OFFSET %s
                 """,
                 (per_page, offset),
@@ -187,13 +193,18 @@ def list_timeseries_observations_global_page(
 
 
 def count_distinct_timeseries_observation_dataset_ids() -> int:
-    """Number of unique dataset_id values present in timeseries_observation."""
+    """Number of timeseries_dataset rows that have at least one observation (no COUNT DISTINCT scan)."""
     if not is_configured():
         return 0
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(DISTINCT dataset_id) FROM timeseries_observation"
+                """
+                SELECT COUNT(*) FROM timeseries_dataset d
+                WHERE EXISTS (
+                    SELECT 1 FROM timeseries_observation o WHERE o.dataset_id = d.id
+                )
+                """
             )
             r = cur.fetchone()
             return int(r[0]) if r and r[0] is not None else 0
@@ -290,12 +301,13 @@ def list_causal_rows_global_page(
             total = int(cur.fetchone()[0])
             page = _clamp_page(page, total, per_page)
             offset = (page - 1) * per_page
+            # PK order avoids full-table filesort (1038) vs ORDER BY dataset/sheet/row across all causal_row.
             cur.execute(
                 """
                 SELECT s.dataset_id, s.sheet_name, r.excel_row_number, r.propagation_path, r.row_payload
                 FROM causal_row r
                 JOIN causal_sheet s ON s.id = r.sheet_id
-                ORDER BY s.dataset_id DESC, s.sheet_name ASC, r.excel_row_number ASC
+                ORDER BY r.id DESC
                 LIMIT %s OFFSET %s
                 """,
                 (per_page, offset),
@@ -404,6 +416,20 @@ def timeseries_dataset_max_observed_at(dataset_id: int) -> Optional[datetime]:
             return r[0] if r and r[0] is not None else None
 
 
+def timeseries_dataset_min_observed_at(dataset_id: int) -> Optional[datetime]:
+    """Earliest observation timestamp for the dataset (UTC stored as naive in DB)."""
+    if not is_configured():
+        return None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT MIN(observed_at) FROM timeseries_observation WHERE dataset_id = %s",
+                (dataset_id,),
+            )
+            r = cur.fetchone()
+            return r[0] if r and r[0] is not None else None
+
+
 def timeseries_dataset_has_rows_in_range(
     dataset_id: int, start_inclusive: datetime, end_exclusive: datetime
 ) -> bool:
@@ -463,13 +489,110 @@ def list_plants_for_dashboard() -> List[Dict[str, Any]]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT dataset_id, plant_name, timeseries_dataset_id, causal_dataset_id
+                SELECT
+                    dataset_id,
+                    plant_name,
+                    timeseries_dataset_id,
+                    COALESCE(causal_matrix_dataset_id, causal_dataset_id) AS causal_dataset_id
                 FROM plant_dataset
                 ORDER BY plant_name ASC, dataset_id ASC
                 """
             )
             cols = [d[0] for d in cur.description]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def list_live_outlier_excel_datasets() -> List[Dict[str, Any]]:
+    """Uploaded Excel datasets for Live Outlier (name + file metadata), newest first."""
+    if not is_configured():
+        return []
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, dataset_name, original_filename, uploaded_at
+                FROM live_outlier_excel_dataset
+                ORDER BY id DESC
+                """
+            )
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def live_outlier_excel_dataset_by_id(dataset_id: int) -> Optional[Dict[str, Any]]:
+    if not is_configured():
+        return None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, dataset_name, original_filename, uploaded_at
+                FROM live_outlier_excel_dataset
+                WHERE id = %s
+                """,
+                (int(dataset_id),),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cur.description]
+            return dict(zip(cols, row))
+
+
+def live_outlier_excel_dataset_min_observed_at(dataset_id: int) -> Optional[datetime]:
+    if not is_configured():
+        return None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT MIN(observed_at) FROM live_outlier_excel_observation WHERE dataset_id = %s",
+                (int(dataset_id),),
+            )
+            r = cur.fetchone()
+            return r[0] if r and r[0] is not None else None
+
+
+def live_outlier_excel_dataset_max_observed_at(dataset_id: int) -> Optional[datetime]:
+    if not is_configured():
+        return None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT MAX(observed_at) FROM live_outlier_excel_observation WHERE dataset_id = %s",
+                (int(dataset_id),),
+            )
+            r = cur.fetchone()
+            return r[0] if r and r[0] is not None else None
+
+
+def live_outlier_excel_distinct_observation_days(
+    dataset_id: int, limit: int = 8000
+) -> List[date]:
+    """UTC calendar days that have at least one observation (for Live Outlier calendar, like completed days on Live Dashboard)."""
+    if not is_configured():
+        return []
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT CAST(observed_at AS DATE) AS d
+                FROM live_outlier_excel_observation
+                WHERE dataset_id = %s AND observed_at IS NOT NULL
+                ORDER BY d ASC
+                LIMIT %s
+                """,
+                (int(dataset_id), int(limit)),
+            )
+            out: List[date] = []
+            for row in cur.fetchall():
+                if not row or row[0] is None:
+                    continue
+                v = row[0]
+                if isinstance(v, datetime):
+                    out.append(v.date())
+                elif isinstance(v, date):
+                    out.append(v)
+            return out
 
 
 def first_plant_dataset_id() -> Optional[int]:
@@ -490,14 +613,57 @@ def list_plants_with_schedule_mappings() -> List[Dict[str, Any]]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT dataset_id, plant_name, timeseries_dataset_id, causal_dataset_id
+                SELECT
+                    dataset_id,
+                    plant_name,
+                    timeseries_dataset_id,
+                    COALESCE(causal_matrix_dataset_id, causal_dataset_id) AS causal_dataset_id
                 FROM plant_dataset
-                WHERE timeseries_dataset_id IS NOT NULL AND causal_dataset_id IS NOT NULL
+                WHERE timeseries_dataset_id IS NOT NULL
+                  AND COALESCE(causal_matrix_dataset_id, causal_dataset_id) IS NOT NULL
                 ORDER BY plant_name ASC, dataset_id ASC
                 """
             )
             cols = [d[0] for d in cur.description]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def find_plant_dataset_id_for_links(
+    timeseries_dataset_id: Optional[int],
+    causal_dataset_id: Optional[int] = None,
+) -> Optional[int]:
+    """Resolve plant_dataset_id by mapped dataset links, if present."""
+    if not is_configured() or not timeseries_dataset_id:
+        return None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            if causal_dataset_id:
+                cur.execute(
+                    """
+                    SELECT dataset_id
+                    FROM plant_dataset
+                    WHERE timeseries_dataset_id = %s
+                      AND COALESCE(causal_matrix_dataset_id, causal_dataset_id) = %s
+                    ORDER BY dataset_id DESC
+                    LIMIT 1
+                    """,
+                    (timeseries_dataset_id, causal_dataset_id),
+                )
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    return int(row[0])
+            cur.execute(
+                """
+                SELECT dataset_id
+                FROM plant_dataset
+                WHERE timeseries_dataset_id = %s
+                ORDER BY dataset_id DESC
+                LIMIT 1
+                """,
+                (timeseries_dataset_id,),
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else None
 
 
 _SCHED_JOB_SELECT_COLS = (
@@ -569,6 +735,29 @@ def scheduled_max_finished_hour_bucket() -> Optional[datetime]:
             return r[0]
 
 
+def scheduled_max_processed_hour_bucket_for_plant(plant_dataset_id: int) -> Optional[datetime]:
+    """
+    Latest day bucket successfully handled for this plant (completed or skipped).
+    Failed days are excluded so the next catch-up pass can retry them.
+    """
+    if not is_configured():
+        return None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT MAX(hour_bucket) FROM scheduled_anomaly_job
+                WHERE plant_dataset_id = %s
+                  AND status IN ('completed', 'skipped')
+                """,
+                (int(plant_dataset_id),),
+            )
+            r = cur.fetchone()
+            if not r or r[0] is None:
+                return None
+            return r[0]
+
+
 def scheduled_latest_completed_job_for_plant(plant_dataset_id: int) -> Optional[Dict[str, Any]]:
     if not is_configured():
         return None
@@ -588,6 +777,49 @@ def scheduled_latest_completed_job_for_plant(plant_dataset_id: int) -> Optional[
             if not row:
                 return None
             return _scheduled_job_dict_from_row(row, cur)
+
+
+def scheduled_latest_job_for_plant(plant_dataset_id: int) -> Optional[Dict[str, Any]]:
+    """Most recent job row for this plant (any status), for UI hints when nothing completed yet."""
+    if not is_configured():
+        return None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT {_SCHED_JOB_SELECT_COLS}
+                FROM scheduled_anomaly_job
+                WHERE plant_dataset_id = %s
+                ORDER BY hour_bucket DESC, id DESC
+                LIMIT 1
+                """,
+                (int(plant_dataset_id),),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return _scheduled_job_dict_from_row(row, cur)
+
+
+def scheduled_latest_running_hour_bucket_for_plant(plant_dataset_id: int) -> Optional[datetime]:
+    """Newest running job day bucket for this plant, if any."""
+    if not is_configured():
+        return None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT MAX(hour_bucket)
+                FROM scheduled_anomaly_job
+                WHERE plant_dataset_id = %s
+                  AND status = 'running'
+                """,
+                (int(plant_dataset_id),),
+            )
+            r = cur.fetchone()
+            if not r or r[0] is None:
+                return None
+            return r[0]
 
 
 def scheduled_latest_completed_job_for_plant_and_day(
@@ -843,3 +1075,214 @@ def scheduled_list_completed_days(limit: int = 365) -> List[date]:
                 (limit,),
             )
             return [row[0] for row in cur.fetchall()]
+
+
+def latest_live_outlier_analysis_run(dataset_id: int) -> Optional[Dict[str, Any]]:
+    """Latest persisted V5 analysis for a Live Outlier Excel dataset (any status)."""
+    if not is_configured():
+        return None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            # MAX(id) avoids ORDER BY ... LIMIT filesort on large run tables (errno 1038).
+            cur.execute(
+                "SELECT MAX(id) FROM live_outlier_analysis_run WHERE dataset_id = %s",
+                (int(dataset_id),),
+            )
+            mx = cur.fetchone()
+            if not mx or mx[0] is None:
+                return None
+            rid = int(mx[0])
+            cur.execute(
+                """
+                SELECT id, dataset_id, started_at, finished_at, status, error_message,
+                       summary_json, artifacts_json
+                FROM live_outlier_analysis_run
+                WHERE id = %s
+                """,
+                (rid,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cur.description]
+            out = dict(zip(cols, row))
+            out["summary_json"] = _decode_json(out.get("summary_json"))
+            out["artifacts_json"] = _decode_json(out.get("artifacts_json"))
+            return out
+
+
+def fetch_live_outlier_detail_rows_for_day(
+    run_id: int, day_start: datetime, day_end_exclusive: datetime
+) -> List[Dict[str, Any]]:
+    """Stored detail rows for a run in ``[day_start, day_end_exclusive)`` (UTC-naive)."""
+    if not is_configured():
+        return []
+    rid = int(run_id)
+    out: List[Dict[str, Any]] = []
+    cols: List[str] = []
+    last_id = 0
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            while True:
+                # ORDER BY id with LIMIT: bounded sort per chunk (avoids errno 1038 on huge days).
+                cur.execute(
+                    """
+                    SELECT id, tag_name, observed_at, actual_value, predicted_value,
+                           final_class, direction, reason
+                    FROM live_outlier_analysis_detail
+                    WHERE run_id = %s
+                      AND observed_at IS NOT NULL
+                      AND observed_at >= %s
+                      AND observed_at < %s
+                      AND id > %s
+                    ORDER BY id ASC
+                    LIMIT %s
+                    """,
+                    (rid, day_start, day_end_exclusive, last_id, _LIVE_OUTLIER_DETAIL_CHUNK),
+                )
+                if not cols:
+                    cols = [d[0] for d in (cur.description or [])]
+                rows = cur.fetchall()
+                if not rows:
+                    break
+                for r in rows:
+                    d = dict(zip(cols, r))
+                    last_id = int(d.pop("id", 0) or 0)
+                    out.append(d)
+                if len(rows) < _LIVE_OUTLIER_DETAIL_CHUNK:
+                    break
+    return out
+
+
+def fetch_live_outlier_detail_rows_for_tag_time_range(
+    run_id: int,
+    tag: str,
+    t_start: datetime,
+    t_end: datetime,
+) -> List[Dict[str, Any]]:
+    """Detail rows for one tag between ``t_start`` and ``t_end`` inclusive (UTC-naive). Keyset-chunked."""
+    if not is_configured():
+        return []
+    rid = int(run_id)
+    tnm = str(tag)
+    out: List[Dict[str, Any]] = []
+    cols: List[str] = []
+    last_id = 0
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            while True:
+                cur.execute(
+                    """
+                    SELECT id, tag_name, observed_at, actual_value, predicted_value,
+                           final_class, direction, reason
+                    FROM live_outlier_analysis_detail
+                    WHERE run_id = %s
+                      AND tag_name = %s
+                      AND observed_at IS NOT NULL
+                      AND observed_at >= %s
+                      AND observed_at <= %s
+                      AND id > %s
+                    ORDER BY id ASC
+                    LIMIT %s
+                    """,
+                    (rid, tnm, t_start, t_end, last_id, _LIVE_OUTLIER_DETAIL_CHUNK),
+                )
+                if not cols:
+                    cols = [d[0] for d in (cur.description or [])]
+                rows = cur.fetchall()
+                if not rows:
+                    break
+                for r in rows:
+                    d = dict(zip(cols, r))
+                    last_id = int(d.pop("id", 0) or 0)
+                    out.append(d)
+                if len(rows) < _LIVE_OUTLIER_DETAIL_CHUNK:
+                    break
+    return out
+
+
+def live_outlier_distinct_tags_for_run_day(
+    run_id: int, day_start: datetime, day_end_exclusive: datetime
+) -> List[str]:
+    if not is_configured():
+        return []
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            # Prefer tag_summary + EXISTS: one index lookup per tag, avoids DISTINCT sort on huge detail (1038).
+            cur.execute(
+                """
+                SELECT t.tag_name
+                FROM live_outlier_analysis_tag_summary t
+                WHERE t.run_id = %s
+                  AND EXISTS (
+                    SELECT 1 FROM live_outlier_analysis_detail d
+                    WHERE d.run_id = t.run_id
+                      AND d.tag_name = t.tag_name
+                      AND d.observed_at IS NOT NULL
+                      AND d.observed_at >= %s
+                      AND d.observed_at < %s
+                    LIMIT 1
+                  )
+                ORDER BY t.tag_name
+                """,
+                (int(run_id), day_start, day_end_exclusive),
+            )
+            tags = [str(r[0]) for r in cur.fetchall() if r and r[0]]
+            if tags:
+                return tags
+            cur.execute(
+                "SELECT COUNT(*) FROM live_outlier_analysis_tag_summary WHERE run_id = %s",
+                (int(run_id),),
+            )
+            n_sum = int(cur.fetchone()[0] or 0)
+            if n_sum > 0:
+                return []
+            # Legacy runs without tag_summary: collect tag_name by id chunks (no DISTINCT sort).
+            seen: set[str] = set()
+            last_id = 0
+            while True:
+                cur.execute(
+                    """
+                    SELECT id, tag_name
+                    FROM live_outlier_analysis_detail
+                    WHERE run_id = %s
+                      AND observed_at IS NOT NULL
+                      AND observed_at >= %s
+                      AND observed_at < %s
+                      AND id > %s
+                    ORDER BY id ASC
+                    LIMIT %s
+                    """,
+                    (int(run_id), day_start, day_end_exclusive, last_id, _LIVE_OUTLIER_DETAIL_CHUNK),
+                )
+                rows = cur.fetchall()
+                if not rows:
+                    break
+                for row_id, tname in rows:
+                    last_id = int(row_id)
+                    if tname:
+                        seen.add(str(tname))
+                if len(rows) < _LIVE_OUTLIER_DETAIL_CHUNK:
+                    break
+            return sorted(seen)
+
+
+def live_outlier_tag_row_count_for_run_day(
+    run_id: int, day_start: datetime, day_end_exclusive: datetime, tag: str
+) -> int:
+    if not is_configured():
+        return 0
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM live_outlier_analysis_detail
+                WHERE run_id = %s AND tag_name = %s
+                  AND observed_at IS NOT NULL
+                  AND observed_at >= %s
+                  AND observed_at < %s
+                """,
+                (int(run_id), str(tag), day_start, day_end_exclusive),
+            )
+            r = cur.fetchone()
+            return int(r[0]) if r and r[0] is not None else 0

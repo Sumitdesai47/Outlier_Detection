@@ -11,6 +11,8 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
+from pymysql.err import OperationalError as PyMySQLOperationalError  # noqa: E402
+
 from services.db_config import database_url, ensure_database_exists, get_connection  # noqa: E402
 
 
@@ -34,7 +36,13 @@ def main() -> int:
             for path in paths:
                 sql = path.read_text(encoding="utf-8")
                 for stmt in _sql_statements(sql):
-                    cur.execute(stmt)
+                    try:
+                        cur.execute(stmt)
+                    except PyMySQLOperationalError as e:
+                        if getattr(e, "args", (None,))[0] == 1061:
+                            print(f"Skip duplicate index ({path.name}): {e}")
+                            continue
+                        raise
                 print(f"Applied: {path.name}")
     print("Schema applied OK.")
     return 0

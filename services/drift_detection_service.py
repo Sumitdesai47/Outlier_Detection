@@ -299,6 +299,20 @@ def run_drift_detection_on_wide_df(df: pd.DataFrame) -> dict:
     if "Timestamp" not in df.columns:
         raise ValueError("Timestamp column not found after parsing uploaded file.")
 
+    # Drift Detection tab requirement: remove rows where uploaded tag values are all null.
+    # This avoids feeding empty calendar rows to Drift_detection.py.
+    value_cols = [c for c in df.columns if c not in {"Timestamp", "Timestamp_raw"}]
+    if not value_cols:
+        raise ValueError("No tag/value columns found in uploaded file.")
+    cleaned_df = df.copy()
+    obj_cols = [c for c in value_cols if cleaned_df[c].dtype == "object"]
+    if obj_cols:
+        cleaned_df[obj_cols] = cleaned_df[obj_cols].replace(r"^\s*$", np.nan, regex=True)
+    cleaned_df = cleaned_df.loc[~cleaned_df[value_cols].isna().all(axis=1)].copy()
+    if cleaned_df.empty:
+        raise ValueError("Uploaded file has no usable rows after removing all-null rows.")
+    df = cleaned_df
+
     # Keep only data expected by script.
     use_cols = [c for c in df.columns if c not in {"Timestamp_raw"}]
     df_for_script = df[use_cols].copy()

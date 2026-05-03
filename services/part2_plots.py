@@ -27,7 +27,7 @@ def build_part2_target_plot_json(
     smoothed_df: pd.DataFrame,
     timestamp_col: str,
     target_tag: str,
-    _drift_time_raw: Any,
+    drift_time_raw: Any = None,
     compare_tags: Sequence[str] | None = None,
 ) -> str:
     ts = safe_parse_datetime_series(smoothed_df[timestamp_col])

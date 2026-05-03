@@ -40,28 +40,209 @@
       <nav class="sidebar-nav">
         <a class="sidebar-link {% if request.endpoint == 'main.overview_dashboard' %}active{% endif %}" href="{{ url_for('main.overview_dashboard') }}">Dashboard</a>
         {% if database_enabled %}
-        <a class="sidebar-link {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
+        <a class="sidebar-link d-none {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
+        <a class="sidebar-link {% if request.endpoint in ('main.live_outlier_results', 'main.live_outlier_result_detail') %}active{% endif %}" href="{{ url_for('main.live_outlier_results') }}">Live Outlier detection</a>
         {% endif %}
-        <a class="sidebar-link {% if active_tab == 'part2' %}active{% endif %}" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
-        <a class="sidebar-link {% if active_tab == 'part3' %}active{% endif %}" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
+        <a class="sidebar-link {% if active_tab == 'part4' %}active{% endif %}" href="{{ url_for('main.index', tab='part4') }}">Auto (No Causal)</a>
+        <a class="sidebar-link d-none {% if active_tab == 'part5' %}active{% endif %}" href="{{ url_for('main.index', tab='part5') }}">Auto (No Clean Data)</a>
+        <a class="sidebar-link d-none {% if active_tab == 'part6' %}active{% endif %}" href="{{ url_for('main.index', tab='part6') }}">Auto Identification</a>
+        <a class="sidebar-link d-none {% if active_tab == 'part7' %}active{% endif %}" href="{{ url_for('main.index', tab='part7') }}">Testing (V4)</a>
+        <a class="sidebar-link {% if active_tab == 'part8' %}active{% endif %}" href="{{ url_for('main.index', tab='part8') }}">Outlier detection</a>
+        <a class="sidebar-link {% if active_tab == 'part9' %}active{% endif %}" href="{{ url_for('main.index', tab='part9') }}">Outlier detection (using data model)</a>
+        <a class="sidebar-link d-none {% if active_tab == 'part10' %}active{% endif %}" href="{{ url_for('main.index', tab='part10') }}">Testing (V7)</a>
         {% if database_enabled %}
-        <a class="sidebar-link {% if request.endpoint in ('main.data_browse', 'main.data_timeseries_detail', 'main.data_causal_detail') %}active{% endif %}" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
-        <a class="sidebar-link {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
+        <a class="sidebar-link d-none {% if request.endpoint in ('main.data_browse', 'main.data_timeseries_detail', 'main.data_causal_detail') %}active{% endif %}" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
+        <a class="sidebar-link d-none {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
+        <a class="sidebar-link {% if request.endpoint == 'main.outlier_excel_upload_page' %}active{% endif %}" href="{{ url_for('main.outlier_excel_upload_page') }}">Live outlier data upload</a>
         {% endif %}
       </nav>
       <div class="sidebar-help text-muted">
-        {% if has_causal_matrix_context %}
-          A causal matrix is available (server <code>{{ causal_matrix_env }}</code> or your last run used this workflow). The <strong>Drift & Root Cause Analysis</strong> tab opens first.
-        {% else %}
-          No server-side causal matrix is configured. Use this workflow when you upload both a causal model and time-series XLSX.
-        {% endif %}
+        Use the <strong>Auto</strong> workflows for time-series outlier and drift detection without a causal matrix upload.
+        <div class="mt-2"><a class="link-secondary small" href="{{ url_for('main.download_workflow_comparison_matrix') }}">Download workflow comparison: Auto vs outlier detection vs data model (Excel)</a></div>
       </div>
     </aside>
 
     <main class="main">
-      <h1 class="mb-3">{% if active_tab == 'part3' %}Drift Detection{% else %}Offline VC{% endif %}</h1>
+      <h1 class="mb-3">
+        {% if active_tab == 'part3' %}
+          Drift Detection
+        {% elif active_tab == 'part4' %}
+          Auto Outlier + Drift (Without Causal)
+        {% elif active_tab == 'part5' %}
+          Auto Outlier + Drift (Without Clean Data)
+        {% elif active_tab == 'part6' %}
+          Auto Identification
+        {% elif active_tab == 'part7' %}
+          Testing — Deviation / Spike / Change (V4)
+        {% elif active_tab == 'part8' %}
+          Outlier detection
+        {% elif active_tab == 'part9' %}
+          Outlier detection (using data model)
+        {% elif active_tab == 'part10' %}
+          Testing — Tri-Engine Fusion (V7)
+        {% else %}
+          Offline VC
+        {% endif %}
+      </h1>
 
       <div class="card home-upload-card">
+        {% if active_tab == 'part4' %}
+        <div class="card-body pt-3">
+          <form action="{{ url_for('main.part4_auto_without_causal') }}" method="post" enctype="multipart/form-data">
+            <div class="row g-3 align-items-end">
+              <div class="col-md-6 col-lg-7">
+                <label class="form-label-sm">Time-Series File (XLSX)</label>
+                <input class="form-control" type="file" name="auto_drift_xlsx" accept=".xlsx" required>
+                <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.download_auto_workflow_doc', workflow='part4') }}">Download methodology</a>
+                  <span class="text-muted small">Steps performed (Word .docx or .doc)</span>
+                </div>
+                <div class="text-muted small mt-1">Runs outlier and drift detection automatically without requiring a causal matrix upload.</div>
+              </div>
+              <div class="col-md-6 col-lg-5">
+                <button class="btn btn-primary w-100" type="submit">Run Auto Detection</button>
+              </div>
+            </div>
+          </form>
+          <div class="text-muted small mt-2">
+            Results include a drift summary table and interactive graph per tag.
+          </div>
+        </div>
+        {% elif active_tab == 'part5' %}
+        <div class="card-body pt-3">
+          <form action="{{ url_for('main.part5_auto_without_clean_data') }}" method="post" enctype="multipart/form-data">
+            <div class="row g-3 align-items-end">
+              <div class="col-md-6 col-lg-7">
+                <label class="form-label-sm">Time-Series File (XLSX)</label>
+                <input class="form-control" type="file" name="auto_no_clean_drift_xlsx" accept=".xlsx" required>
+                <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.download_auto_workflow_doc', workflow='part5') }}">Download methodology</a>
+                  <span class="text-muted small">Steps performed (Word .docx or .doc)</span>
+                </div>
+                <div class="text-muted small mt-1">Auto stable window and limits from that window only (without_causal_auto_clean_outlier).</div>
+              </div>
+              <div class="col-md-6 col-lg-5">
+                <button class="btn btn-primary w-100" type="submit">Run Auto (No Clean Data)</button>
+              </div>
+            </div>
+          </form>
+          <div class="text-muted small mt-2">
+            Same results UI as other auto tabs; comparison baseline uses the full timeline (see methodology file).
+          </div>
+        </div>
+        {% elif active_tab == 'part6' %}
+        <div class="card-body pt-3">
+          <form action="{{ url_for('main.part6_auto_identification') }}" method="post" enctype="multipart/form-data">
+            <div class="row g-3 align-items-end">
+              <div class="col-md-6 col-lg-7">
+                <label class="form-label-sm">Time-Series File (XLSX)</label>
+                <input class="form-control" type="file" name="auto_identification_xlsx" accept=".xlsx" required>
+                <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.download_auto_workflow_doc', workflow='part6') }}">Download methodology</a>
+                  <span class="text-muted small">Steps performed (Word .docx or .doc)</span>
+                </div>
+                <div class="text-muted small mt-1">Clean-anchored V3: auto window plus similar-history reference expansion (without_causal_clean_anchored_improved_v3).</div>
+              </div>
+              <div class="col-md-6 col-lg-5">
+                <button class="btn btn-primary w-100" type="submit">Run Auto Identification</button>
+              </div>
+            </div>
+          </form>
+          <div class="text-muted small mt-2">
+            Later periods that match anchor behavior are folded into normal reference; see methodology for full steps.
+          </div>
+        </div>
+        {% elif active_tab == 'part7' %}
+        <div class="card-body pt-3">
+          <form action="{{ url_for('main.part7_auto_testing_deviation_spike_v4') }}" method="post" enctype="multipart/form-data">
+            <div class="row g-3 align-items-end">
+              <div class="col-md-6 col-lg-7">
+                <label class="form-label-sm">Time-Series File (XLSX)</label>
+                <input class="form-control" type="file" name="auto_testing_v4_xlsx" accept=".xlsx" required>
+                <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.download_auto_workflow_doc', workflow='part7') }}">Download methodology</a>
+                  <span class="text-muted small">Steps performed (Word .docx or .doc)</span>
+                </div>
+                <div class="text-muted small mt-1">Same results layout as Auto (No Clean Data); logic from without_causal_clean_deviation_spike_change_v4.py (clean score + spike/change + clean-like limits).</div>
+              </div>
+              <div class="col-md-6 col-lg-5">
+                <button class="btn btn-primary w-100" type="submit">Run Testing (V4)</button>
+              </div>
+            </div>
+          </form>
+          <div class="text-muted small mt-2">
+            Comparison baseline uses the full timeline (std limits), same as the No Clean Data tab.
+          </div>
+        </div>
+        {% elif active_tab == 'part8' %}
+        <div class="card-body pt-3">
+          <form action="{{ url_for('main.part8_auto_testing_deviation_spike_v5') }}" method="post" enctype="multipart/form-data">
+            <div class="row g-3 align-items-end">
+              <div class="col-md-6 col-lg-7">
+                <label class="form-label-sm">Time-Series File (XLSX)</label>
+                <input class="form-control" type="file" name="auto_testing_v5_xlsx" accept=".xlsx" required>
+                <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.download_auto_workflow_doc', workflow='part8') }}">Download methodology</a>
+                  <span class="text-muted small">Steps performed (Word .docx or .doc)</span>
+                </div>
+                <div class="text-muted small mt-1">Multi-signal outlier detection: clean period without moving average, clean-like limits, and within-limit spike, change, or persistent deviation (without_causal_clean_deviation_spike_change_v5).</div>
+              </div>
+              <div class="col-md-6 col-lg-5">
+                <button class="btn btn-primary w-100" type="submit">Run outlier detection</button>
+              </div>
+            </div>
+          </form>
+          <div class="text-muted small mt-2">
+            Comparison baseline uses the full timeline (std limits), same as the No Clean Data tab.
+          </div>
+        </div>
+        {% elif active_tab == 'part9' %}
+        <div class="card-body pt-3">
+          <form action="{{ url_for('main.part9_auto_testing_top5_corr_regression_v6') }}" method="post" enctype="multipart/form-data">
+            <div class="row g-3 align-items-end">
+              <div class="col-md-6 col-lg-7">
+                <label class="form-label-sm">Time-Series File (XLSX)</label>
+                <input class="form-control" type="file" name="auto_testing_v6_xlsx" accept=".xlsx" required>
+                <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.download_auto_workflow_doc', workflow='part9') }}">Download methodology</a>
+                  <span class="text-muted small">Steps performed (Word .docx or .doc)</span>
+                </div>
+                <div class="text-muted small mt-1">Same results layout as other outlier tabs; logic from without_causal_top5_corr_regression_fast.py — top-5 correlated ridge, residual and range rules, no causal matrix.</div>
+              </div>
+              <div class="col-md-6 col-lg-5">
+                <button class="btn btn-primary w-100" type="submit">Run outlier detection (using data model)</button>
+              </div>
+            </div>
+          </form>
+          <div class="text-muted small mt-2">
+            Wide matrix or All_Results long format; needs at least two numeric tags.
+          </div>
+        </div>
+        {% elif active_tab == 'part10' %}
+        <div class="card-body pt-3">
+          <form action="{{ url_for('main.part10_auto_testing_fusion_v7') }}" method="post" enctype="multipart/form-data">
+            <div class="row g-3 align-items-end">
+              <div class="col-md-6 col-lg-7">
+                <label class="form-label-sm">Time-Series File (XLSX)</label>
+                <input class="form-control" type="file" name="auto_testing_v7_xlsx" accept=".xlsx" required>
+                <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.download_auto_workflow_doc', workflow='part10') }}">Download methodology</a>
+                  <span class="text-muted small">Steps performed (Word .docx or .doc)</span>
+                </div>
+                <div class="text-muted small mt-1">Runs <strong>Auto (no causal)</strong>, <strong>Outlier detection</strong>, and <strong>Outlier detection (using data model)</strong> on the same file; fuses labels by <strong>max severity</strong> (Normal &lt; Drift &lt; Contextual Anomaly &lt; Drift + Anomaly &lt; Strong Anomaly). Detail rows include per-engine rationale.</div>
+              </div>
+              <div class="col-md-6 col-lg-5">
+                <button class="btn btn-primary w-100" type="submit">Run Testing (V7)</button>
+              </div>
+            </div>
+          </form>
+          <div class="text-muted small mt-2">
+            Slower than a single tab (all three pipelines). Same wide / All_Results formats as outlier detection (using data model) where applicable.
+          </div>
+        </div>
+        {% else %}
         {% if active_tab == 'part3' %}
         <div class="card-header home-tab-header border-bottom-0 bg-white pt-3 px-3 pb-0">
           <ul class="nav nav-tabs home-inner-tabs border-bottom-0" id="homeInnerTabs" role="tablist">
@@ -174,6 +355,7 @@
           {% endif %}
 
         </div>
+        {% endif %}
       </div>
 
       {% if error %}

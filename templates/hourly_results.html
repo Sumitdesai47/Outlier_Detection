@@ -18,24 +18,33 @@
       <nav class="sidebar-nav">
         <a class="sidebar-link {% if request.endpoint == 'main.overview_dashboard' %}active{% endif %}" href="{{ url_for('main.overview_dashboard') }}">Dashboard</a>
         {% if database_enabled %}
-        <a class="sidebar-link {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
+        <a class="sidebar-link d-none {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
         {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') and plants %}
-          <div class="sidebar-subnav" aria-label="Live Dashboard plants">
+          <div class="sidebar-subnav d-none" aria-label="Live Dashboard plants">
             {% for p in plants %}
               {% set pid = p.dataset_id %}
               <a
                 class="sidebar-sublink {% if selected_plant_id == pid %}active{% endif %}"
-                href="{{ url_for('main.hourly_results', plant=pid, day=selected_day_value or none) }}"
+                href="{{ url_for('main.hourly_results', plant=pid) }}"
               >{{ p.plant_name }}</a>
             {% endfor %}
           </div>
         {% endif %}
+        <a class="sidebar-link {% if request.endpoint in ('main.live_outlier_results', 'main.live_outlier_result_detail') %}active{% endif %}" href="{{ url_for('main.live_outlier_results') }}">Live Outlier detection</a>
         {% endif %}
-        <a class="sidebar-link" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
-        <a class="sidebar-link" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
+        <a class="sidebar-link" href="{{ url_for('main.index', tab='part4') }}">Auto (No Causal)</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part5') }}">Auto (No Clean Data)</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part6') }}">Auto Identification</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part7') }}">Testing (V4)</a>
+        <a class="sidebar-link" href="{{ url_for('main.index', tab='part8') }}">Outlier detection</a>
+        <a class="sidebar-link" href="{{ url_for('main.index', tab='part9') }}">Outlier detection (using data model)</a>
+        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part10') }}">Testing (V7)</a>
         {% if database_enabled %}
-        <a class="sidebar-link {% if request.endpoint in ('main.data_browse', 'main.data_timeseries_detail', 'main.data_causal_detail') %}active{% endif %}" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
-        <a class="sidebar-link {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
+        <a class="sidebar-link d-none {% if request.endpoint in ('main.data_browse', 'main.data_timeseries_detail', 'main.data_causal_detail') %}active{% endif %}" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
+        <a class="sidebar-link d-none {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
+        <a class="sidebar-link {% if request.endpoint == 'main.outlier_excel_upload_page' %}active{% endif %}" href="{{ url_for('main.outlier_excel_upload_page') }}">Live outlier data upload</a>
         {% endif %}
       </nav>
     </aside>
@@ -76,20 +85,186 @@
 
         {% if parse_error %}<div class="alert alert-warning mb-3">{{ parse_error }}</div>{% endif %}
 
+        {% if live_plant_status and live_plant_status.get('has_mapping') %}
+        <div class="alert alert-light border mb-3 d-flex flex-wrap align-items-center justify-content-between gap-2" id="liveDashboardCatchupPanel">
+          <div class="small text-muted flex-grow-1" style="min-width: 220px;">
+            <div class="fw-semibold text-dark mb-1">Live data processing</div>
+            {% if live_plant_status.get('caught_up') %}
+              <span class="text-success">Catch-up complete through <code>{{ live_plant_status.catchup_cap_day or '—' }}</code> (UTC day buckets).</span>
+            {% else %}
+              <div>Scheduler: {% if live_plant_status.get('scheduler_enabled') %}<span class="text-success">enabled</span>{% else %}<span class="text-warning">disabled</span>{% endif %}
+                · Observations: <code>{{ live_plant_status.data_first_day or '—' }}</code> → <code>{{ live_plant_status.data_last_day or '—' }}</code></div>
+              <div>Next day to process: <code>{{ live_plant_status.next_catchup_day or '—' }}</code>
+                · Cap: <code>{{ live_plant_status.catchup_cap_day or '—' }}</code>
+                {% if live_plant_status.get('last_processed_day') %}
+                · Last processed: <code>{{ live_plant_status.last_processed_day }}</code>
+                {% endif %}
+              </div>
+            {% endif %}
+            <div class="mt-1">Completed drift days in DB: <strong>{{ live_plant_status.completed_count or 0 }}</strong></div>
+            <p class="small mb-0 mt-1 text-muted">Manual button runs <strong>one</strong> calendar day for <strong>this plant only</strong>: the day after its last completed/skipped run, or the first day with time-series data if this plant has no runs yet. Each click processes that single day only (no multi-day skip in one request).</p>
+            <p class="small mb-0 mt-1 text-muted">If <code>LIVE_DASHBOARD_MANUAL_TOKEN</code> is set on the server, set browser <code>localStorage.live_dashboard_manual_token</code> to the same value so this button can call the API.</p>
+          </div>
+          <div class="d-flex flex-column align-items-stretch gap-1">
+            {% if live_plant_status.get('caught_up') %}
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="liveDashboardCatchupBtn" disabled
+              data-plant-id="{{ selected_plant_id }}"
+              data-caught-up="1"
+              aria-disabled="true">
+              All days processed
+            </button>
+            {% else %}
+            <button type="button" class="btn btn-sm btn-primary" id="liveDashboardCatchupBtn"
+              data-plant-id="{{ selected_plant_id }}"
+              data-caught-up="0">
+              Process next day
+            </button>
+            {% endif %}
+            <span class="small text-muted" id="liveDashboardCatchupMsg" style="max-width: 14rem;"></span>
+          </div>
+        </div>
+        <script>
+          (function () {
+            const btn = document.getElementById("liveDashboardCatchupBtn");
+            const msg = document.getElementById("liveDashboardCatchupMsg");
+            if (!btn || !msg) return;
+            const pidRaw = (btn.getAttribute("data-plant-id") || "").trim();
+            const plantNum = parseInt(pidRaw, 10);
+            let runningPollTimer = null;
+            function restoreButton() {
+              if (runningPollTimer) {
+                clearInterval(runningPollTimer);
+                runningPollTimer = null;
+              }
+              btn.disabled = false;
+              btn.removeAttribute("aria-busy");
+              if (btn.dataset.labelDefault) btn.textContent = btn.dataset.labelDefault;
+              btn.classList.remove("btn-secondary");
+              if (btn.dataset.wasPrimary === "1") btn.classList.add("btn-primary");
+            }
+            function setProcessing() {
+              if (!btn.dataset.labelDefault) btn.dataset.labelDefault = btn.textContent || "Process next day";
+              btn.dataset.wasPrimary = btn.classList.contains("btn-primary") ? "1" : "0";
+              btn.textContent = "Processing…";
+              btn.classList.remove("btn-primary");
+              btn.classList.add("btn-secondary");
+              btn.disabled = true;
+              btn.setAttribute("aria-busy", "true");
+              msg.textContent = "";
+            }
+            async function checkPlantRunningStatus() {
+              const res = await fetch("{{ url_for('main.api_live_dashboard_plant_status') }}?plant=" + encodeURIComponent(String(plantNum)));
+              const data = await res.json().catch(function () { return null; });
+              if (!res.ok || !data) return null;
+              return data;
+            }
+            function keepProcessingUntilDone() {
+              if (runningPollTimer) return;
+              runningPollTimer = setInterval(async function () {
+                try {
+                  const status = await checkPlantRunningStatus();
+                  if (!status) return;
+                  if (status.has_running_job) {
+                    const d = status.running_day ? (" (" + status.running_day + ")") : "";
+                    msg.textContent = "Processing is running" + d + "...";
+                    return;
+                  }
+                  restoreButton();
+                  msg.textContent = "Processing finished.";
+                  window.location.reload();
+                } catch (_) {
+                  // Keep current state; transient poll failures should not flicker the button.
+                }
+              }, 3000);
+            }
+            btn.addEventListener("click", async function () {
+              if (btn.disabled || btn.getAttribute("data-caught-up") === "1") return;
+              if (!pidRaw || Number.isNaN(plantNum)) {
+                msg.textContent = "Missing plant id; reload the page.";
+                return;
+              }
+              setProcessing();
+              try {
+                const payload = { plant_dataset_id: plantNum, max_day_runs: 1 };
+                const headers = { "Content-Type": "application/json" };
+                const tok = (typeof localStorage !== "undefined")
+                  ? localStorage.getItem("live_dashboard_manual_token") : null;
+                if (tok) {
+                  headers["X-Live-Dashboard-Token"] = tok;
+                  payload.token = tok;
+                }
+                const res = await fetch("{{ url_for('main.api_live_dashboard_catchup') }}", {
+                  method: "POST",
+                  headers,
+                  body: JSON.stringify(payload),
+                });
+                const data = await res.json().catch(function () { return null; });
+                if (!res.ok) {
+                  const err = (data && (data.error || data.message)) ? String(data.error || data.message) : "";
+                  const hint = (data && data.hint) ? (" " + String(data.hint)) : "";
+                  msg.textContent = err || ("HTTP " + res.status + (res.status === 401 ? " — set localStorage.live_dashboard_manual_token" : ""));
+                  msg.textContent += hint;
+                  restoreButton();
+                  return;
+                }
+                if (!data || data.ok === false) {
+                  msg.textContent = (data && (data.message || data.error)) ? String(data.message || data.error) : "Could not run catch-up.";
+                  restoreButton();
+                  return;
+                }
+                const statuses = Array.isArray(data.plants)
+                  ? data.plants.map(function (p) { return String((p && p.status) || "").toLowerCase(); })
+                  : [];
+                const isRunning = statuses.includes("blocked_running");
+                msg.textContent = (data && data.message) ? String(data.message) : "Done.";
+                if (isRunning) {
+                  setProcessing();
+                  keepProcessingUntilDone();
+                  return;
+                }
+                restoreButton();
+                window.location.reload();
+              } catch (e) {
+                msg.textContent = String(e);
+                restoreButton();
+              }
+            });
+          })();
+        </script>
+        {% endif %}
+
         {% if plants and plant_needs_mapping %}
           <div class="alert alert-warning mb-3">
             <strong>{{ selected_plant.plant_name if selected_plant else 'This plant' }}</strong> has no live-dashboard data mapping yet.
             Set <code>timeseries_dataset_id</code> and <code>causal_dataset_id</code> on this row in <code>plant_dataset</code> (IDs from your <code>timeseries_dataset</code> and <code>causal_dataset</code> tables) so the scheduler can produce drift results for this plant.
           </div>
-        {% elif plants and not plant_needs_mapping and not job %}
+        {% elif plants and not plant_needs_mapping %}
+          {# Per-plant calendar: always expose completed drift days + observation bounds (not only when a job row is selected). #}
+          <script type="application/json" id="live-calendar-data">{{ {
+            "plantDatasetId": selected_plant_id,
+            "enabledDays": completed_days_iso,
+            "job_id": job.id if job else none,
+            "drifts": drifts,
+            "observationFirst": live_plant_status.data_first_day if live_plant_status else none,
+            "observationLast": live_plant_status.data_last_day if live_plant_status else none
+          }|tojson }}</script>
+
+        {% if plants and not plant_needs_mapping and not job %}
           <div class="alert alert-info mb-3">
             No completed drift run for <strong>{{ selected_plant.plant_name if selected_plant else 'this plant' }}</strong>
             {% if selected_day_value %}on <strong>{{ selected_day_value }}</strong>{% endif %}.
-            Pick another date from the calendar or wait for the scheduled job to finish.
+            {% if live_latest_scheduled_job and live_latest_scheduled_job.status|string|lower == 'running' %}
+            <span class="d-block mt-2 small">There is a job stuck in <strong>running</strong> for day <code>{{ live_latest_scheduled_job.hour_bucket.date().isoformat() if live_latest_scheduled_job.hour_bucket else '—' }}</code>.
+            Click <strong>Process next day</strong> — runs older than ~2 hours are reclaimed automatically — or delete the row in <code>scheduled_anomaly_job</code> if it never finishes.</span>
+            {% elif live_latest_scheduled_job and live_latest_scheduled_job.status|string|lower == 'failed' %}
+            <span class="d-block mt-2 small">Latest scheduled job is <strong>failed</strong> (day <code>{{ live_latest_scheduled_job.hour_bucket.date().isoformat() if live_latest_scheduled_job.hour_bucket else '—' }}</code>). Use <strong>Process next day</strong> to retry the next calendar day, or fix the error and clear failed rows if needed.</span>
+            {% elif completed_days_iso %}
+            <span class="d-block mt-2 small">Pick a date highlighted in the calendar (days with drift results for this plant), or wait for processing.</span>
+            {% else %}
+            <span class="d-block mt-2 small">No drift results for this plant yet — use <strong>Process next day</strong> above or wait for the scheduler.</span>
+            {% endif %}
           </div>
         {% elif plants and not plant_needs_mapping and job %}
-          <script type="application/json" id="hourly-config">{{ {"job_id": job.id, "drifts": drifts, "enabledDays": completed_days_iso}|tojson }}</script>
-
           <div class="hourly-split-panels mb-3">
             <div class="hourly-panel-left">
               <div class="card border">
@@ -159,13 +334,13 @@
 
           <script>
             (function () {
-              const cfgEl = document.getElementById("hourly-config");
+              const cfgEl = document.getElementById("live-calendar-data");
               if (!cfgEl) return;
               let cfg = {};
               try {
                 cfg = JSON.parse(cfgEl.textContent || "{}");
               } catch (e) {
-                console.error("hourly-config JSON parse failed", e);
+                console.error("live-calendar-data JSON parse failed", e);
                 return;
               }
               const jobId = cfg.job_id;
@@ -300,6 +475,7 @@
             })();
           </script>
         {% endif %}
+        {% endif %}
         <script>
           (function () {
             const dayInput = document.querySelector("input[name='day']");
@@ -307,10 +483,15 @@
             const main = document.querySelector("main.hourly-compact");
             const pid = main && main.getAttribute("data-selected-plant-id");
             let enabledDays = [];
-            const cfgEl = document.getElementById("hourly-config");
-            if (cfgEl) {
+            let observationFirst = null;
+            let observationLast = null;
+            const calEl = document.getElementById("live-calendar-data");
+            if (calEl) {
               try {
-                enabledDays = JSON.parse(cfgEl.textContent || "{}").enabledDays || [];
+                const cal = JSON.parse(calEl.textContent || "{}");
+                enabledDays = cal.enabledDays || [];
+                observationFirst = cal.observationFirst || null;
+                observationLast = cal.observationLast || null;
               } catch (e) {}
             }
             if (typeof flatpickr !== "undefined") {
@@ -320,6 +501,8 @@
                 clickOpens: true,
                 disableMobile: true,
               };
+              if (observationFirst) fpOpts.minDate = observationFirst;
+              if (observationLast) fpOpts.maxDate = observationLast;
               if (enabledDays.length > 0) {
                 fpOpts.enable = [
                   function (date) {

@@ -5,8 +5,10 @@ Same file content (SHA-256) is not inserted twice — existing dataset id is reu
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
+import secrets
 from datetime import datetime
 import time
 from pathlib import Path
@@ -20,6 +22,29 @@ from .db_config import ensure_database_exists, get_connection, is_configured
 from .time_series_utils import load_wide_time_series_xlsx
 
 logger = logging.getLogger(__name__)
+
+# Set on each causal persist attempt; read by upload API when persist returns None.
+LAST_CAUSAL_PERSIST_DIAGNOSTIC: Optional[str] = None
+
+# Short catalog for support / UI (full text is also embedded in LAST_CAUSAL_PERSIST_DIAGNOSTIC).
+CAUSAL_PERSIST_ERROR_CATALOG: Dict[str, str] = {
+    "CAUSAL_E001": "DATABASE_URL missing or not mysql:// — causal persist skipped.",
+    "CAUSAL_E002": "Causal upload body is empty (0 bytes).",
+    "CAUSAL_E003": "File is not a readable .xlsx for openpyxl (corrupt or wrong format).",
+    "CAUSAL_E004": "MySQL IntegrityError during persist; recovery by hash was attempted.",
+    "CAUSAL_E005": "Recovery could not re-open the workbook after IntegrityError.",
+    "CAUSAL_E006": "Recovery found no causal_dataset row for this file hash.",
+    "CAUSAL_E007": "Recovery completed but causal_row count is still 0.",
+    "CAUSAL_E008": "Recovery transaction failed (see message for exception).",
+    "CAUSAL_E009": "Unexpected exception during causal persist (see message).",
+    "CAUSAL_E010": "Dedupe/re-ingest: existing causal_dataset still has 0 causal_row.",
+    "CAUSAL_E011": "Duplicate-hash path: after ingest, causal_row count still 0.",
+    "CAUSAL_E012": "New causal_dataset committed but causal_sheet/causal_row empty after retry.",
+    "CAUSAL_E013": "Reingest skipped: database not configured.",
+    "CAUSAL_E014": "Reingest skipped: empty file bytes.",
+    "CAUSAL_E015": "Reingest failed with an exception (see message).",
+    "CAUSAL_E016": "Cannot read causal file from disk path (persist_causal_xlsx).",
+}
 
 _ROOT = Path(__file__).resolve().parents[1]
 _schema_applied = False
@@ -84,7 +109,18 @@ def apply_schema_if_needed() -> None:
                     continue
                 sql_text = path.read_text(encoding="utf-8")
                 for stmt in _sql_statements(sql_text):
-                    cur.execute(stmt)
+                    try:
+                        cur.execute(stmt)
+                    except PyMySQLOperationalError as e:
+                        # 1061 ER_DUP_KEYNAME — index already exists (re-run migrations).
+                        if getattr(e, "args", (None,))[0] == 1061:
+                            logger.warning(
+                                "schema skip duplicate index (%s): %s",
+                                path.name,
+                                e.args[1] if len(e.args) > 1 else e,
+                            )
+                            continue
+                        raise
     _schema_applied = True
 
 
@@ -155,7 +191,9 @@ def persist_timeseries_xlsx(file_path: str, original_filename: str) -> Optional[
         raw_ts_s = None if raw_ts is None or pd.isna(raw_ts) else str(raw_ts)
         for tag in tag_cols:
             val = row.get(tag)
-            num = None if val is None or (isinstance(val, float) and pd.isna(val)) else float(val)
+            # Handle NaN/NaT/blank robustly; avoid float(pd.NaT) TypeError.
+            num_v = pd.to_numeric(val, errors="coerce")
+            num = None if pd.isna(num_v) else float(num_v)
             observations.append((row_idx, ts_out, raw_ts_s, str(tag), num))
 
     obs_sql = """
@@ -224,37 +262,21 @@ def persist_timeseries_xlsx(file_path: str, original_filename: str) -> Optional[
         return None
 
 
-def persist_causal_xlsx(file_path: str, original_filename: str) -> Optional[int]:
-    """Store causal workbook: each sheet as causal_sheet + causal_row rows."""
-    if not is_configured():
-        return None
-    try:
-        apply_schema_if_needed()
-        content_hash = _sha256_file(file_path)
-        xl = pd.ExcelFile(file_path)
-    except Exception as e:
-        logger.exception("causal xlsx open/hash failed: %s", e)
-        return None
+def _count_causal_rows_for_dataset(cur, dataset_id: int) -> int:
+    cur.execute(
+        """
+        SELECT COUNT(*) FROM causal_row r
+        INNER JOIN causal_sheet s ON s.id = r.sheet_id
+        WHERE s.dataset_id = %s
+        """,
+        (dataset_id,),
+    )
+    r = cur.fetchone()
+    return int(r[0]) if r and r[0] is not None else 0
 
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id FROM causal_dataset WHERE content_sha256 = %s",
-                    (content_hash,),
-                )
-                hit = cur.fetchone()
-                if hit:
-                    logger.info(
-                        "causal dedupe: reusing dataset id=%s hash=%s...",
-                        hit[0],
-                        content_hash[:12],
-                    )
-                    return int(hit[0])
-    except Exception as e:
-        logger.exception("causal dedupe lookup: %s", e)
-        return None
 
+def _ingest_causal_sheets(cur, dataset_id: int, content: bytes, xl: pd.ExcelFile) -> None:
+    """Insert causal_sheet + causal_row for each non-empty sheet (matches parse_causal_matrix_xlsx)."""
     row_sql = """
         INSERT INTO causal_row (sheet_id, excel_row_number, propagation_path, row_payload)
         VALUES (%s, %s, %s, %s)
@@ -262,91 +284,367 @@ def persist_causal_xlsx(file_path: str, original_filename: str) -> Optional[int]
             propagation_path = VALUES(propagation_path),
             row_payload = VALUES(row_payload)
     """
+    for sheet_name in xl.sheet_names:
+        df = pd.read_excel(io.BytesIO(content), sheet_name=sheet_name, engine="openpyxl")
+        if df.empty:
+            continue
+        path_col = None
+        try:
+            path_col = _find_propagation_path_column(df)
+        except Exception:
+            path_col = df.columns[0] if len(df.columns) else None
+
+        cur.execute(
+            """
+            INSERT INTO causal_sheet (dataset_id, sheet_name, row_count)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE row_count = VALUES(row_count)
+            """,
+            (dataset_id, str(sheet_name), len(df)),
+        )
+        cur.execute(
+            "SELECT id FROM causal_sheet WHERE dataset_id = %s AND sheet_name = %s",
+            (dataset_id, str(sheet_name)),
+        )
+        sheet_row = cur.fetchone()
+        if not sheet_row:
+            continue
+        sheet_id = int(sheet_row[0])
+
+        rows_buf: List[tuple] = []
+        for i, (_, row) in enumerate(df.iterrows(), start=2):
+            payload = {str(k): _json_safe_cell(row[k]) for k in df.columns}
+            ptxt = None
+            if path_col is not None and path_col in df.columns:
+                v = row.get(path_col)
+                if v is not None and not (isinstance(v, float) and pd.isna(v)):
+                    ptxt = str(v).strip() or None
+            rows_buf.append((sheet_id, i, ptxt, _j(payload)))
+
+        if rows_buf:
+            _executemany_chunked(cur, row_sql, rows_buf, chunk_size=500)
+
+
+def persist_causal_workbook_bytes(
+    content: bytes,
+    original_filename: str,
+    *,
+    reuse_by_content_hash: bool = True,
+) -> Optional[int]:
+    """
+    Store causal workbook from raw bytes: causal_dataset + causal_sheet + causal_row.
+
+    Uses the same BytesIO + openpyxl path as parse_causal_matrix_xlsx so ingestion matches validation.
+
+    If content_sha256 matches an existing row but causal_row is empty (failed prior ingest),
+    sheets are cleared and the workbook is re-ingested into that dataset id.
+
+    When reuse_by_content_hash is True (default), one causal_dataset row is shared for identical
+    file bytes (UNIQUE content_sha256). When False (e.g. plant upload), always INSERT a new
+    causal_dataset using a unique storage hash; the file's SHA-256 is stored in
+    meta.source_content_sha256.
+
+    On failure, see LAST_CAUSAL_PERSIST_DIAGNOSTIC (error codes CAUSAL_E001…).
+    """
+    global LAST_CAUSAL_PERSIST_DIAGNOSTIC
+    LAST_CAUSAL_PERSIST_DIAGNOSTIC = None
+
+    if not is_configured():
+        LAST_CAUSAL_PERSIST_DIAGNOSTIC = (
+            "CAUSAL_E001: DATABASE_URL not set or not mysql:// — MySQL unavailable."
+        )
+        return None
+    if not content:
+        LAST_CAUSAL_PERSIST_DIAGNOSTIC = "CAUSAL_E002: Causal file body is empty (0 bytes)."
+        return None
+    try:
+        apply_schema_if_needed()
+        file_sha256 = hashlib.sha256(content).hexdigest()
+        xl = pd.ExcelFile(io.BytesIO(content), engine="openpyxl")
+    except Exception as e:
+        LAST_CAUSAL_PERSIST_DIAGNOSTIC = (
+            f"CAUSAL_E003: Cannot open workbook as .xlsx (openpyxl). {type(e).__name__}: {e}"
+        )
+        logger.exception("causal workbook open/hash failed: %s", e)
+        return None
+
+    if reuse_by_content_hash:
+        row_sha256 = file_sha256
+    else:
+        row_sha256 = hashlib.sha256(
+            content + b"\x00plant_dataset\x00" + secrets.token_bytes(16)
+        ).hexdigest()
+
+    orig = (original_filename or "causal.xlsx").strip() or "causal.xlsx"
+    meta_obj: Dict[str, Any] = {"sheets": xl.sheet_names}
+    if not reuse_by_content_hash:
+        meta_obj["source_content_sha256"] = file_sha256
+        meta_obj["persist_mode"] = "plant_unique_causal_dataset"
+    meta = _j(meta_obj)
 
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
+                if reuse_by_content_hash:
+                    cur.execute(
+                        "SELECT id FROM causal_dataset WHERE content_sha256 = %s",
+                        (row_sha256,),
+                    )
+                    hit = cur.fetchone()
+                    if hit:
+                        dataset_id = int(hit[0])
+                        n = _count_causal_rows_for_dataset(cur, dataset_id)
+                        if n > 0:
+                            logger.info(
+                                "causal dedupe: reusing dataset id=%s hash=%s...",
+                                dataset_id,
+                                row_sha256[:12],
+                            )
+                            return dataset_id
+                        logger.warning(
+                            "causal dedupe hit id=%s but 0 rows; re-ingesting sheets",
+                            dataset_id,
+                        )
+                        cur.execute(
+                            "DELETE FROM causal_sheet WHERE dataset_id = %s", (dataset_id,)
+                        )
+                        cur.execute(
+                            """
+                            UPDATE causal_dataset
+                            SET meta = %s, original_filename = %s
+                            WHERE id = %s
+                            """,
+                            (meta, orig, dataset_id),
+                        )
+                        _ingest_causal_sheets(cur, dataset_id, content, xl)
+                        if _count_causal_rows_for_dataset(cur, dataset_id) == 0:
+                            LAST_CAUSAL_PERSIST_DIAGNOSTIC = (
+                                f"CAUSAL_E010: After re-ingest, causal_dataset id={dataset_id} "
+                                "still has 0 causal_row (all sheets empty for pandas read_excel?)."
+                            )
+                            logger.error(
+                                "causal re-ingest still 0 rows for dataset_id=%s", dataset_id
+                            )
+                        else:
+                            LAST_CAUSAL_PERSIST_DIAGNOSTIC = None
+                        return dataset_id
+
                 try:
                     cur.execute(
                         """
                         INSERT INTO causal_dataset (original_filename, meta, content_sha256)
                         VALUES (%s, %s, %s)
                         """,
-                        (
-                            original_filename or Path(file_path).name,
-                            _j({"sheets": xl.sheet_names}),
-                            content_hash,
-                        ),
+                        (orig, meta, row_sha256),
                     )
                     dataset_id = int(cur.lastrowid)
                 except PyMySQLIntegrityError:
                     cur.execute(
                         "SELECT id FROM causal_dataset WHERE content_sha256 = %s",
-                        (content_hash,),
+                        (row_sha256,),
                     )
                     ex = cur.fetchone()
-                    if ex:
-                        logger.info("causal dedupe (race): reusing dataset id=%s", ex[0])
-                        return int(ex[0])
-                    raise
+                    if not ex:
+                        raise
+                    dataset_id = int(ex[0])
+                    n = _count_causal_rows_for_dataset(cur, dataset_id)
+                    if n == 0:
+                        cur.execute(
+                            "DELETE FROM causal_sheet WHERE dataset_id = %s",
+                            (dataset_id,),
+                        )
+                        cur.execute(
+                            """
+                            UPDATE causal_dataset
+                            SET meta = %s, original_filename = %s
+                            WHERE id = %s
+                            """,
+                            (meta, orig, dataset_id),
+                        )
+                        _ingest_causal_sheets(cur, dataset_id, content, xl)
+                    if _count_causal_rows_for_dataset(cur, dataset_id) == 0:
+                        LAST_CAUSAL_PERSIST_DIAGNOSTIC = (
+                            f"CAUSAL_E011: Duplicate hash path — causal_dataset id={dataset_id} "
+                            "still has 0 causal_row after ingest."
+                        )
+                        logger.error(
+                            "causal ingest after duplicate-key still 0 rows for dataset_id=%s",
+                            dataset_id,
+                        )
+                    else:
+                        LAST_CAUSAL_PERSIST_DIAGNOSTIC = None
+                    return dataset_id
 
-                for sheet_name in xl.sheet_names:
-                    df = pd.read_excel(file_path, sheet_name=sheet_name)
-                    path_col = None
-                    try:
-                        path_col = _find_propagation_path_column(df)
-                    except Exception:
-                        path_col = df.columns[0] if len(df.columns) else None
-
-                    cur.execute(
-                        """
-                        INSERT INTO causal_sheet (dataset_id, sheet_name, row_count)
-                        VALUES (%s, %s, %s)
-                        ON DUPLICATE KEY UPDATE row_count = VALUES(row_count)
-                        """,
-                        (dataset_id, str(sheet_name), len(df)),
+                _ingest_causal_sheets(cur, dataset_id, content, xl)
+                n_final = _count_causal_rows_for_dataset(cur, dataset_id)
+                if n_final == 0:
+                    logger.warning(
+                        "causal ingest produced 0 rows for new dataset_id=%s; re-trying ingest",
+                        dataset_id,
                     )
                     cur.execute(
-                        "SELECT id FROM causal_sheet WHERE dataset_id = %s AND sheet_name = %s",
-                        (dataset_id, str(sheet_name)),
+                        "DELETE FROM causal_sheet WHERE dataset_id = %s", (dataset_id,)
                     )
-                    sheet_row = cur.fetchone()
-                    if not sheet_row:
-                        continue
-                    sheet_id = int(sheet_row[0])
-
-                    rows_buf: List[tuple] = []
-                    for i, (_, row) in enumerate(df.iterrows(), start=2):
-                        payload = {str(k): _json_safe_cell(row[k]) for k in df.columns}
-                        ptxt = None
-                        if path_col is not None and path_col in df.columns:
-                            v = row.get(path_col)
-                            if v is not None and not (isinstance(v, float) and pd.isna(v)):
-                                ptxt = str(v).strip() or None
-                        rows_buf.append((sheet_id, i, ptxt, _j(payload)))
-
-                    if rows_buf:
-                        _executemany_chunked(cur, row_sql, rows_buf, chunk_size=500)
-
-        return int(dataset_id)
-    except PyMySQLIntegrityError:
+                    _ingest_causal_sheets(cur, dataset_id, content, xl)
+                    n_final = _count_causal_rows_for_dataset(cur, dataset_id)
+                    if n_final == 0:
+                        LAST_CAUSAL_PERSIST_DIAGNOSTIC = (
+                            f"CAUSAL_E012: New causal_dataset id={dataset_id} committed but "
+                            "causal_sheet/causal_row remain empty (check sheet visibility, filters, macros)."
+                        )
+                    else:
+                        LAST_CAUSAL_PERSIST_DIAGNOSTIC = None
+                return dataset_id
+    except PyMySQLIntegrityError as ie:
+        # e.g. race on content_sha256, or rare duplicate inside _ingest_causal_sheets.
+        # Never return an id without verifying causal_row exists.
+        logger.warning("persist_causal_workbook_bytes integrity (recovering): %s", ie)
+        LAST_CAUSAL_PERSIST_DIAGNOSTIC = (
+            f"CAUSAL_E004: MySQL IntegrityError during causal persist — {ie!r}. "
+            "Attempting recovery by content_sha256."
+        )
+        try:
+            xl_recover = pd.ExcelFile(io.BytesIO(content), engine="openpyxl")
+        except Exception as e2:
+            LAST_CAUSAL_PERSIST_DIAGNOSTIC = (
+                f"CAUSAL_E005: Recovery failed — cannot re-open xlsx. {type(e2).__name__}: {e2}"
+            )
+            return None
         try:
             with get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT id FROM causal_dataset WHERE content_sha256 = %s",
-                        (content_hash,),
+                        (row_sha256,),
                     )
                     ex = cur.fetchone()
-                    if ex:
-                        logger.info("causal dedupe (race): reusing dataset id=%s", ex[0])
-                        return int(ex[0])
+                    if not ex:
+                        LAST_CAUSAL_PERSIST_DIAGNOSTIC = (
+                            "CAUSAL_E006: Recovery — no causal_dataset row for this file hash after error."
+                        )
+                        return None
+                    did = int(ex[0])
+                    n = _count_causal_rows_for_dataset(cur, did)
+                    if n == 0:
+                        cur.execute(
+                            "DELETE FROM causal_sheet WHERE dataset_id = %s", (did,)
+                        )
+                        cur.execute(
+                            """
+                            UPDATE causal_dataset
+                            SET meta = %s, original_filename = %s
+                            WHERE id = %s
+                            """,
+                            (meta, orig, did),
+                        )
+                        _ingest_causal_sheets(cur, did, content, xl_recover)
+                    n2 = _count_causal_rows_for_dataset(cur, did)
+                    if n2 == 0:
+                        LAST_CAUSAL_PERSIST_DIAGNOSTIC = (
+                            f"CAUSAL_E007: Recovery finished but causal_dataset id={did} has 0 causal_row."
+                        )
+                    else:
+                        LAST_CAUSAL_PERSIST_DIAGNOSTIC = None
+                    return did
         except Exception as e:
+            LAST_CAUSAL_PERSIST_DIAGNOSTIC = (
+                f"CAUSAL_E008: Recovery transaction failed — {type(e).__name__}: {e}"
+            )
             logger.exception("causal dedupe after conflict: %s", e)
-        return None
+            return None
     except Exception as e:
-        logger.exception("persist_causal_xlsx: %s", e)
+        LAST_CAUSAL_PERSIST_DIAGNOSTIC = (
+            f"CAUSAL_E009: Unexpected error during causal persist — {type(e).__name__}: {e}"
+        )
+        logger.exception("persist_causal_workbook_bytes: %s", e)
         return None
+
+
+def persist_causal_xlsx(
+    file_path: str,
+    original_filename: str,
+    *,
+    reuse_by_content_hash: bool = True,
+) -> Optional[int]:
+    """Store causal workbook from disk path (delegates to byte ingest)."""
+    global LAST_CAUSAL_PERSIST_DIAGNOSTIC
+    if not is_configured():
+        LAST_CAUSAL_PERSIST_DIAGNOSTIC = (
+            "CAUSAL_E001: DATABASE_URL not set or not mysql:// — MySQL unavailable."
+        )
+        return None
+    try:
+        data = Path(file_path).read_bytes()
+    except Exception as e:
+        LAST_CAUSAL_PERSIST_DIAGNOSTIC = (
+            f"CAUSAL_E016: Cannot read causal file from disk — {type(e).__name__}: {e}"
+        )
+        logger.exception("causal xlsx read failed: %s", e)
+        return None
+    return persist_causal_workbook_bytes(
+        data,
+        original_filename or Path(file_path).name,
+        reuse_by_content_hash=reuse_by_content_hash,
+    )
+
+
+def count_causal_rows_for_causal_dataset(dataset_id: int) -> int:
+    """Number of causal_row rows under this causal_dataset.id."""
+    if not is_configured():
+        return 0
+    try:
+        apply_schema_if_needed()
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                return _count_causal_rows_for_dataset(cur, int(dataset_id))
+    except Exception as e:
+        logger.exception("count_causal_rows_for_causal_dataset: %s", e)
+        return 0
+
+
+def reingest_causal_workbook_for_dataset_id(
+    dataset_id: int, content: bytes, original_filename: str
+) -> Optional[str]:
+    """
+    Replace causal_sheet/causal_row for an existing causal_dataset id (same file bytes).
+
+    Returns None on success, or a CAUSAL_E013…E015 diagnostic string on failure.
+    """
+    global LAST_CAUSAL_PERSIST_DIAGNOSTIC
+    if not is_configured():
+        LAST_CAUSAL_PERSIST_DIAGNOSTIC = (
+            "CAUSAL_E013: Reingest skipped — DATABASE_URL not set or not mysql://."
+        )
+        return LAST_CAUSAL_PERSIST_DIAGNOSTIC
+    if not content:
+        LAST_CAUSAL_PERSIST_DIAGNOSTIC = "CAUSAL_E014: Reingest skipped — causal file body is empty."
+        return LAST_CAUSAL_PERSIST_DIAGNOSTIC
+    try:
+        apply_schema_if_needed()
+        orig = (original_filename or "causal.xlsx").strip() or "causal.xlsx"
+        xl = pd.ExcelFile(io.BytesIO(content), engine="openpyxl")
+        meta = _j({"sheets": xl.sheet_names})
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM causal_sheet WHERE dataset_id = %s", (int(dataset_id),)
+                )
+                cur.execute(
+                    """
+                    UPDATE causal_dataset
+                    SET meta = %s, original_filename = %s
+                    WHERE id = %s
+                    """,
+                    (meta, orig, int(dataset_id)),
+                )
+                _ingest_causal_sheets(cur, int(dataset_id), content, xl)
+    except Exception as e:
+        msg = f"CAUSAL_E015: Reingest failed — {type(e).__name__}: {e}"
+        LAST_CAUSAL_PERSIST_DIAGNOSTIC = msg
+        logger.exception("reingest_causal_workbook_for_dataset_id: %s", e)
+        return msg
+    LAST_CAUSAL_PERSIST_DIAGNOSTIC = None
+    return None
 
 
 def persist_anomaly_run(
@@ -354,6 +652,7 @@ def persist_anomaly_run(
     result_session_uuid: str,
     timeseries_dataset_id: Optional[int],
     causal_dataset_id: Optional[int],
+    plant_dataset_id: Optional[int],
     historic_ratio: float,
     lookback_months: int,
     top_k_drift: int,
@@ -363,11 +662,12 @@ def persist_anomaly_run(
     if not is_configured():
         return None
     drift_sql = """
-        INSERT INTO anomaly_drift_result (run_id, rank_order, tag, drift_score)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO anomaly_drift_result (run_id, plant_dataset_id, rank_order, tag, drift_score)
+        VALUES (%s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             tag = VALUES(tag),
-            drift_score = VALUES(drift_score)
+            drift_score = VALUES(drift_score),
+            plant_dataset_id = VALUES(plant_dataset_id)
     """
     try:
         apply_schema_if_needed()
@@ -376,15 +676,16 @@ def persist_anomaly_run(
                 cur.execute(
                     """
                     INSERT INTO anomaly_run (
-                        result_session_uuid, timeseries_dataset_id, causal_dataset_id,
+                        result_session_uuid, timeseries_dataset_id, causal_dataset_id, plant_dataset_id,
                         historic_ratio, lookback_months, top_k_drift, summary, status
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'completed')
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'completed')
                     """,
                     (
                         result_session_uuid,
                         timeseries_dataset_id,
                         causal_dataset_id,
+                        plant_dataset_id,
                         historic_ratio,
                         lookback_months,
                         top_k_drift,
@@ -394,7 +695,13 @@ def persist_anomaly_run(
                 run_id = int(cur.lastrowid)
 
                 drift_tuples = [
-                    (run_id, i, str(r.get("Tag", "")), r.get("Drift_Score"))
+                    (
+                        run_id,
+                        plant_dataset_id,
+                        i,
+                        str(r.get("Tag", "")),
+                        r.get("Drift_Score"),
+                    )
                     for i, r in enumerate(top_drift_rows)
                 ]
                 if drift_tuples:
@@ -415,21 +722,22 @@ def persist_anomaly_roots(
         return
     insert_sql = """
         INSERT INTO anomaly_root_cause_result
-            (run_id, target_tag, rank_order, root_cause_tag, root_cause_score, propagation_path)
-        VALUES (%s, %s, %s, %s, %s, %s)
+            (run_id, plant_dataset_id, target_tag, rank_order, root_cause_tag, root_cause_score, propagation_path)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
     """
     try:
         apply_schema_if_needed()
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id FROM anomaly_run WHERE result_session_uuid = %s",
+                    "SELECT id, plant_dataset_id FROM anomaly_run WHERE result_session_uuid = %s",
                     (result_session_uuid,),
                 )
                 one = cur.fetchone()
                 if not one:
                     return
                 run_id = one[0]
+                plant_dataset_id = one[1]
                 cur.execute(
                     "DELETE FROM anomaly_root_cause_result WHERE run_id = %s AND target_tag = %s",
                     (run_id, target_tag),
@@ -437,6 +745,7 @@ def persist_anomaly_roots(
                 tuples = [
                     (
                         run_id,
+                        plant_dataset_id,
                         target_tag,
                         i,
                         str(r.get("root_cause", "")),
@@ -454,6 +763,7 @@ def persist_outlier_run(
     *,
     result_session_uuid: str,
     timeseries_dataset_id: Optional[int],
+    plant_dataset_id: Optional[int],
     tag_summaries: List[Dict[str, Any]],
     details_by_tag: Dict[str, Any],
     monthly_pages_by_tag: Dict[str, List[Dict[str, Any]]],
@@ -461,9 +771,11 @@ def persist_outlier_run(
     if not is_configured():
         return None
     month_sql = """
-        INSERT INTO outlier_monthly_page (run_id, tag_name, month_label, page_rows)
-        VALUES (%s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE page_rows = VALUES(page_rows)
+        INSERT INTO outlier_monthly_page (run_id, plant_dataset_id, tag_name, month_label, page_rows)
+        VALUES (%s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            page_rows = VALUES(page_rows),
+            plant_dataset_id = VALUES(plant_dataset_id)
     """
     try:
         apply_schema_if_needed()
@@ -472,12 +784,13 @@ def persist_outlier_run(
                 cur.execute(
                     """
                     INSERT INTO outlier_run
-                        (result_session_uuid, timeseries_dataset_id, tag_summaries, details_by_tag, status)
-                    VALUES (%s, %s, %s, %s, 'completed')
+                        (result_session_uuid, timeseries_dataset_id, plant_dataset_id, tag_summaries, details_by_tag, status)
+                    VALUES (%s, %s, %s, %s, %s, 'completed')
                     """,
                     (
                         result_session_uuid,
                         timeseries_dataset_id,
+                        plant_dataset_id,
                         _j(tag_summaries),
                         _j(details_by_tag),
                     ),
@@ -490,6 +803,7 @@ def persist_outlier_run(
                         month_rows.append(
                             (
                                 run_id,
+                                plant_dataset_id,
                                 str(tag),
                                 str(p.get("month", "")),
                                 _j(p.get("rows", [])),
