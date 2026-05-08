@@ -207,6 +207,24 @@ body {
   box-shadow: 0 4px 18px rgba(15, 23, 42, 0.06);
 }
 
+/* Methodology download — below file input on home upload card */
+.home-methodology-btn {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #475569;
+  border-color: #cbd5e1;
+  border-radius: 10px;
+  padding: 0.35rem 0.75rem;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.home-methodology-btn:hover {
+  color: #334155;
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+
 .home-tab-header .home-inner-tabs .nav-link {
   color: #64748b;
   font-weight: 600;

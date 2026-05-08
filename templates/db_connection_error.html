@@ -14,7 +14,7 @@
       <nav class="sidebar-nav">
         <a class="sidebar-link {% if request.endpoint == 'main.overview_dashboard' %}active{% endif %}" href="{{ url_for('main.overview_dashboard') }}">Dashboard</a>
         {% if database_enabled %}
-        <a class="sidebar-link d-none {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
+        <a class="sidebar-link {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
         <a class="sidebar-link {% if request.endpoint in ('main.live_outlier_results', 'main.live_outlier_result_detail') %}active{% endif %}" href="{{ url_for('main.live_outlier_results') }}">Live Outlier detection</a>
         {% endif %}
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>

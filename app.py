@@ -24,5 +24,7 @@ init_scheduler_if_enabled(app)
 
 if __name__ == "__main__":
     # Dev server port: set FLASK_PORT in .env (default 5001).
+    # Host: default 127.0.0.1; set FLASK_RUN_HOST=0.0.0.0 for LAN/tunnel tools that require bind-all.
     port = int(os.environ.get("FLASK_PORT", "5001"))
-    app.run(host="127.0.0.1", port=port, debug=True)
+    host = os.environ.get("FLASK_RUN_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    app.run(host=host, port=port, debug=True)

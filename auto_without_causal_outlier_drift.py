@@ -185,6 +185,18 @@ def is_ignored_col(col: str) -> bool:
     return any(k.replace(" ", "_") in name for k in IGNORE_COL_KEYWORDS)
 
 
+def _count_wide_like_numeric_columns(df: pd.DataFrame, timestamp_col: str) -> int:
+    """Columns that look like per-tag measurements in a wide matrix (same rule as detect_wide_tag_cols)."""
+    n = 0
+    for col in df.columns:
+        if col == timestamp_col or is_ignored_col(col):
+            continue
+        converted = pd.to_numeric(df[col], errors="coerce")
+        if converted.notna().sum() >= 5 and converted.notna().mean() >= 0.2:
+            n += 1
+    return n
+
+
 def detect_long_columns(
     df: pd.DataFrame,
     timestamp_col: str,
@@ -200,6 +212,11 @@ def detect_long_columns(
 
     if tag_col_override and value_col_override:
         return True, tag_col_override, value_col_override
+
+    # Wide exports (timestamp + many numeric tags) were sometimes misread as long when a
+    # sparse numeric column paired with a *_Pv / *value* name. Prefer wide if enough tag-like columns exist.
+    if _count_wide_like_numeric_columns(df, timestamp_col) >= 8:
+        return False, None, None
 
     tag_candidates = []
     for col in cols:

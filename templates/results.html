@@ -309,30 +309,45 @@
       const xVarsBody = document.getElementById("part4XVarsBody");
       if (!tag || !tableBody) return;
 
-      const rows = rowsByTag[tag] || [];
+      const allRows = rowsByTag[tag] || [];
+      const rows = allRows.filter(function (r) {
+        return String(r.Final_Class || "").trim() === "Strong Anomaly";
+      });
       tableBody.innerHTML = "";
       if (rows.length === 0) {
         const tr = document.createElement("tr");
         const td = document.createElement("td");
-        td.colSpan = 7;
+        td.colSpan = 4;
         td.className = "text-muted";
-        td.textContent = "No table rows available for this tag.";
+        td.textContent = "No Strong Anomaly rows for this tag.";
         tr.appendChild(td);
         tableBody.appendChild(tr);
       } else {
         rows.forEach(function (r) {
           const tr = document.createElement("tr");
-          ["Timestamp", "Actual_Value", "Predicted_Value", "Final_Class", "Direction", "Reason"].forEach(function (k) {
-            const td = document.createElement("td");
-            const v = r[k];
-            td.textContent = v === null || v === undefined ? "" : String(v);
-            tr.appendChild(td);
-          });
+          const tsTd = document.createElement("td");
+          tsTd.textContent = r.Timestamp === null || r.Timestamp === undefined ? "" : String(r.Timestamp);
+          tr.appendChild(tsTd);
+
+          const actTd = document.createElement("td");
+          const actNum = Number(r.Actual_Value);
+          actTd.textContent = Number.isNaN(actNum) ? "" : actNum.toFixed(2);
+          tr.appendChild(actTd);
+
+          const predTd = document.createElement("td");
+          const predNum = Number(r.Predicted_Value);
+          predTd.textContent = Number.isNaN(predNum) ? "" : predNum.toFixed(2);
+          tr.appendChild(predTd);
+
+          const clsTd = document.createElement("td");
+          clsTd.textContent = r.Final_Class === null || r.Final_Class === undefined ? "" : String(r.Final_Class);
+          tr.appendChild(clsTd);
+
           tableBody.appendChild(tr);
         });
       }
 
-      if (limitsBody) {
+        if (limitsBody) {
         const l = limitsByTag[tag] || {};
         const fmt = function (v) {
           if (v === null || v === undefined || v === "") return "";
@@ -351,27 +366,41 @@
         });
         limitsBody.innerHTML = "";
         [
-          ["Total timestamps (rows)", String(rows.length)],
-          ["Points classified as Drift", String(classCounts.drift)],
-          ["Points classified as Drift + Anomaly", String(classCounts.driftAnomaly)],
-          ["Points classified as Strong Anomaly", String(classCounts.strong)],
-          ["Points classified as Normal", String(classCounts.normal)],
-          ["Points (other / unclassified)", String(classCounts.other)],
-          ["Baseline Center", fmt(l.baseline_center)],
-          ["Baseline Scale", fmt(l.baseline_scale)],
-          ["Drift Lower Limit", fmt(l.drift_lower_limit)],
-          ["Drift Upper Limit", fmt(l.drift_upper_limit)],
-          ["Drift + Anomaly Lower", fmt(l.drift_anomaly_lower_limit)],
-          ["Drift + Anomaly Upper", fmt(l.drift_anomaly_upper_limit)],
-          ["Strong Anomaly Lower", fmt(l.strong_anomaly_lower_limit)],
-          ["Strong Anomaly Upper", fmt(l.strong_anomaly_upper_limit)],
-        ].forEach(function (pair) {
+          ["Total timestamps (rows)", String(rows.length), "Total time-stamps for this tag on the current run (after parsing)."],
+          ["Points classified as Drift", String(classCounts.drift), "Number of timestamps marked as Drift for this tag."],
+          ["Points classified as Drift + Anomaly", String(classCounts.driftAnomaly), "Number of timestamps marked as combined Drift + Anomaly."],
+          ["Points classified as Strong Anomaly", String(classCounts.strong), "Number of timestamps flagged as Strong Anomaly (highest severity)."],
+          ["Points classified as Normal", String(classCounts.normal), "Number of timestamps inside clean limits (Normal class)."],
+          ["Points (other / unclassified)", String(classCounts.other), "Points with a status that is not Normal / Drift / Drift + Anomaly / Strong Anomaly."],
+          ["Baseline Center", fmt(l.baseline_center), "Clean reference level (median/center) used to build limits for this tag."],
+          ["Baseline Scale", fmt(l.baseline_scale), "Clean reference spread (scale) for this tag, e.g. std/MAD/IQR-based."],
+          ["Drift Lower Limit", fmt(l.drift_lower_limit), "Lower drift band boundary; values below this start to count as drift."],
+          ["Drift Upper Limit", fmt(l.drift_upper_limit), "Upper drift band boundary; values above this start to count as drift."],
+          ["Drift + Anomaly Lower", fmt(l.drift_anomaly_lower_limit), "Lower band for combined Drift + Anomaly classification."],
+          ["Drift + Anomaly Upper", fmt(l.drift_anomaly_upper_limit), "Upper band for combined Drift + Anomaly classification."],
+          ["Strong Anomaly Lower", fmt(l.strong_anomaly_lower_limit), "Lower boundary for Strong Anomaly band (extreme low values)."],
+          ["Strong Anomaly Upper", fmt(l.strong_anomaly_upper_limit), "Upper boundary for Strong Anomaly band (extreme high values)."],
+        ].forEach(function (triple) {
           const tr = document.createElement("tr");
           const th = document.createElement("th");
-          th.textContent = pair[0];
+          const labelSpan = document.createElement("span");
+          labelSpan.textContent = triple[0];
+          th.appendChild(labelSpan);
+          if (triple[2]) {
+            const icon = document.createElement("span");
+            icon.textContent = "i";
+            icon.style.fontSize = "11px";
+            icon.style.marginLeft = "4px";
+            icon.style.cursor = "help";
+            icon.style.borderRadius = "50%";
+            icon.style.border = "1px solid #ccc";
+            icon.style.padding = "0 4px";
+            icon.title = triple[2];
+            th.appendChild(icon);
+          }
           th.style.width = "260px";
           const td = document.createElement("td");
-          td.textContent = pair[1];
+          td.textContent = triple[1];
           tr.appendChild(th);
           tr.appendChild(td);
           limitsBody.appendChild(tr);
@@ -416,6 +445,28 @@
         }
         p.style.display = p.getAttribute("data-month") === month ? "block" : "none";
       });
+    }
+
+    function filterPart4TagOptions() {
+      const search = document.getElementById("part4TagSearch");
+      const select = document.getElementById("part4PrimaryTag");
+      if (!search || !select) return;
+      const q = String(search.value || "").trim().toLowerCase();
+      let visibleCount = 0;
+      let firstVisible = null;
+      Array.from(select.options || []).forEach(function (opt) {
+        const txt = String(opt.textContent || "").toLowerCase();
+        const keep = q === "" || txt.indexOf(q) >= 0;
+        opt.hidden = !keep;
+        if (keep) {
+          visibleCount += 1;
+          if (!firstVisible) firstVisible = opt;
+        }
+      });
+      if (visibleCount > 0 && select.selectedOptions.length > 0 && select.selectedOptions[0].hidden) {
+        select.value = firstVisible.value;
+        showPart4Tag(select.value);
+      }
     }
 
     document.addEventListener("DOMContentLoaded", function () {
@@ -492,7 +543,7 @@
       <nav class="sidebar-nav">
         <a class="sidebar-link {% if request.endpoint == 'main.overview_dashboard' %}active{% endif %}" href="{{ url_for('main.overview_dashboard') }}">Dashboard</a>
         {% if database_enabled %}
-        <a class="sidebar-link d-none {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
+        <a class="sidebar-link {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
         <a class="sidebar-link {% if request.endpoint in ('main.live_outlier_results', 'main.live_outlier_result_detail') %}active{% endif %}" href="{{ url_for('main.live_outlier_results') }}">Live Outlier detection</a>
         {% endif %}
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
@@ -534,10 +585,44 @@
             <table class="table table-sm table-bordered">
               <tbody>
               {% for k, v in part2.summary.items() %}
+                {% if k not in [
+                  "Abnormal Rate",
+                  "Clean Rows",
+                  "Selected_Excel_Sheet",
+                  "Input_Format_Detected",
+                  "Detected_Timestamp_Column",
+                  "Detected_Tag_Column",
+                  "Detected_Value_Column",
+                  "Comparison_vs_Global_Changed_tags",
+                  "Comparison_vs_Global_Changed_Tags",
+                  "Comparison_vs_Global_Changed_Row_Rate",
+                  "Comparison_vs_Global_Note",
+                  "Model_Built_Tags",
+                  "Model_Fallback_Tags"
+                ] %}
                 <tr>
-                  <th scope="row" style="width: 280px;">{{ k }}</th>
+                  <th scope="row" style="width: 280px;">
+                    {{ k }}
+                    {% if k in ["Total_Rows", "Total_Rows_Analyzed"] %}
+                      <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                            title="Total number of time-series rows used in this analysis.">i</span>
+                    {% elif k in ["Total_Tags", "Unique_Tags"] %}
+                      <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                            title="Number of unique tags/columns included in the run.">i</span>
+                    {% elif k.startswith("Drift_Z") %}
+                      <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                            title="Z-score threshold where drift band starts from the baseline.">i</span>
+                    {% elif k.startswith("Drift_Anomaly_Z") %}
+                      <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                            title="Z-score threshold where drift + anomaly band starts (stronger than Drift_Z).">i</span>
+                    {% elif k.startswith("Strong_Anomaly_Z") %}
+                      <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                            title="Highest Z-score band used to flag strong anomalies far outside limits.">i</span>
+                    {% endif %}
+                  </th>
                   <td>{{ v }}</td>
                 </tr>
+                {% endif %}
               {% endfor %}
               </tbody>
             </table>
@@ -709,10 +794,62 @@
           <table class="table table-sm table-bordered">
             <tbody>
             {% for k, v in part4.summary.items() %}
+              {% if k not in [
+                "Abnormal Rate",
+                "Clean Rows",
+                "Selected_Excel_Sheet",
+                "Input_Format_Detected",
+                "Detected_Timestamp_Column",
+                "Detected_Tag_Column",
+                "Detected_Value_Column",
+                "Comparison_vs_Global_Changed_tags",
+                "Comparison_vs_Global_Changed_Tags",
+                "Comparison_vs_Global_Changed_Row_Rate",
+                "Comparison_vs_Global_Note",
+                "Model_Built_Tags",
+                "Model_Fallback_Tags"
+              ] %}
               <tr>
-                <th scope="row" style="width: 280px;">{{ k }}</th>
+                <th scope="row" style="width: 280px;">
+                  {{ k }}
+                  {% if k in ["Total_Timestamps", "Total_Rows", "Total_Rows_Analyzed"] %}
+                    <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                          title="Total number of time-series rows used in this Auto run.">i</span>
+                  {% elif k in ["Total_Tags", "Unique_Tags"] %}
+                    <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                          title="Number of unique tags/columns analysed in this Auto run.">i</span>
+                  {% elif k == "Threshold_Mode" %}
+                    <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                          title="Describes how clean limits and Z thresholds were chosen (global vs adaptive vs clean-window only).">i</span>
+                  {% elif k.startswith("Drift_Z") %}
+                    <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                          title="Z-score threshold where drift band starts from the baseline.">i</span>
+                  {% elif k.startswith("Drift_Anomaly_Z") %}
+                    <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                          title="Z-score threshold where drift + anomaly band starts (stronger than Drift_Z).">i</span>
+                  {% elif k.startswith("Strong_Anomaly_Z") %}
+                    <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                          title="Highest Z-score band used to mark strong anomalies far outside limits.">i</span>
+                  {% elif k in ["Model_Built_Tags"] %}
+                    <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                          title="Tags that have a learned regression model (using correlated tags) instead of pure EWMA.">i</span>
+                  {% elif k in ["Model_Fallback_Tags"] %}
+                    <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                          title="Tags that fell back to EWMA/median prediction because a regression model was not reliable.">i</span>
+                  {% elif k == "Comparison_vs_Global_Changed_Rows" %}
+                    <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                          title="Number of rows whose final class changed vs the global-std baseline comparison model.">i</span>
+                  {% elif k == "Comparison_vs_Global_Changed_Tags" %}
+                    <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                          title="Number of tags that have at least one row classified differently vs the global-std baseline.">i</span>
+                  {% elif k == "Comparison_vs_Global_Changed_Row_Rate" %}
+                    <span style="font-size: 11px; margin-left: 4px; cursor: help; border-radius: 50%; border: 1px solid #ccc; padding: 0 4px;"
+                          title="Fraction of rows (0–1) with a different class vs the global-std baseline model.">i</span>
+                  {% endif %}
+                </th>
                 <td>{{ v }}</td>
               </tr>
+              {% endif %}
             {% endfor %}
             </tbody>
           </table>
@@ -748,8 +885,9 @@
         {% if part4.tag_names|length > 0 %}
         <div class="row mb-3 g-3 align-items-end">
           <div class="col-md-6">
-            <label for="part4PrimaryTag" class="form-label-sm">Select tag</label>
-            <select id="part4PrimaryTag" class="form-select" onchange="showPart4Tag(this.value)">
+            <label for="part4TagSearch" class="form-label-sm">Find and select tag</label>
+            <input id="part4TagSearch" class="form-control form-control-sm mb-2" type="text" placeholder="Search tag..." oninput="filterPart4TagOptions()">
+            <select id="part4PrimaryTag" class="form-select form-select-sm" onchange="showPart4Tag(this.value)">
               {% for t in part4.tag_names %}
                 <option value="{{ t }}">{{ t }}</option>
               {% endfor %}
@@ -781,7 +919,7 @@
           </table>
         </div>
 
-        <h4 style="font-size: 14px;">Detailed rows for selected tag</h4>
+        <h4 style="font-size: 14px;">Detailed rows for selected tag (Strong Anomaly only)</h4>
         <div class="table-responsive mb-3">
           <table class="table table-sm table-striped">
             <thead>
@@ -790,8 +928,6 @@
                 <th>Actual Value</th>
                 <th>Predicted Value</th>
                 <th>Final Class</th>
-                <th>Direction</th>
-                <th>Reason</th>
               </tr>
             </thead>
             <tbody id="part4RowsTableBody"></tbody>

@@ -1807,9 +1807,25 @@ def part4_auto_without_causal():
     drift_xlsx = request.files.get("auto_drift_xlsx")
     if not drift_xlsx:
         return _render_index(active_tab="part4", error="Missing file: auto_drift_xlsx")
+    if not getattr(drift_xlsx, "filename", None):
+        return _render_index(active_tab="part4", error="Please choose an Excel (.xlsx) file.")
+    try:
+        validate_excel_filename(drift_xlsx.filename)
+    except ValueError as e:
+        return _render_index(active_tab="part4", error=str(e))
 
-    drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
-    result = run_auto_without_causal_outlier_drift(drift_xlsx_path)
+    try:
+        drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
+        result = run_auto_without_causal_outlier_drift(drift_xlsx_path)
+    except Exception as e:
+        logger.exception("Auto (No Causal) upload failed: %s", e)
+        return _render_index(
+            active_tab="part4",
+            error=(
+                "Could not process the uploaded file for Auto (No Causal). "
+                "Please verify the Excel format (Timestamp + numeric tag columns) and try again."
+            ),
+        )
 
     df_for_script = result.pop("df_for_script")
     out_df = result.pop("out_df")
@@ -1999,9 +2015,25 @@ def part8_auto_testing_deviation_spike_v5():
     drift_xlsx = request.files.get("auto_testing_v5_xlsx")
     if not drift_xlsx:
         return _render_index(active_tab="part8", error="Missing file: auto_testing_v5_xlsx")
+    if not getattr(drift_xlsx, "filename", None):
+        return _render_index(active_tab="part8", error="Please choose an Excel (.xlsx) file.")
+    try:
+        validate_excel_filename(drift_xlsx.filename)
+    except ValueError as e:
+        return _render_index(active_tab="part8", error=str(e))
 
-    drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
-    result = run_testing_deviation_spike_v5_outlier_drift(drift_xlsx_path)
+    try:
+        drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
+        result = run_testing_deviation_spike_v5_outlier_drift(drift_xlsx_path)
+    except Exception as e:
+        logger.exception("Outlier detection upload failed: %s", e)
+        return _render_index(
+            active_tab="part8",
+            error=(
+                "Could not process the uploaded file for Outlier detection. "
+                "Please verify the Excel format (Timestamp + numeric tag columns) and try again."
+            ),
+        )
 
     df_for_script = result.pop("df_for_script")
     out_df = result.pop("out_df")
@@ -2047,9 +2079,25 @@ def part9_auto_testing_top5_corr_regression_v6():
     drift_xlsx = request.files.get("auto_testing_v6_xlsx")
     if not drift_xlsx:
         return _render_index(active_tab="part9", error="Missing file: auto_testing_v6_xlsx")
+    if not getattr(drift_xlsx, "filename", None):
+        return _render_index(active_tab="part9", error="Please choose an Excel (.xlsx) file.")
+    try:
+        validate_excel_filename(drift_xlsx.filename)
+    except ValueError as e:
+        return _render_index(active_tab="part9", error=str(e))
 
-    drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
-    result = run_testing_top5_corr_regression_outlier_drift(drift_xlsx_path)
+    try:
+        drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
+        result = run_testing_top5_corr_regression_outlier_drift(drift_xlsx_path)
+    except Exception as e:
+        logger.exception("Outlier detection (using data model) upload failed: %s", e)
+        return _render_index(
+            active_tab="part9",
+            error=(
+                "Could not process the uploaded file for Outlier detection (using data model). "
+                "Please verify the Excel format (Timestamp + numeric tag columns) and try again."
+            ),
+        )
 
     df_for_script = result.pop("df_for_script")
     out_df = result.pop("out_df")

@@ -40,7 +40,7 @@
       <nav class="sidebar-nav">
         <a class="sidebar-link {% if request.endpoint == 'main.overview_dashboard' %}active{% endif %}" href="{{ url_for('main.overview_dashboard') }}">Dashboard</a>
         {% if database_enabled %}
-        <a class="sidebar-link d-none {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
+        <a class="sidebar-link {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
         <a class="sidebar-link {% if request.endpoint in ('main.live_outlier_results', 'main.live_outlier_result_detail') %}active{% endif %}" href="{{ url_for('main.live_outlier_results') }}">Live Outlier detection</a>
         {% endif %}
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
@@ -95,20 +95,15 @@
               <div class="col-md-6 col-lg-7">
                 <label class="form-label-sm">Time-Series File (XLSX)</label>
                 <input class="form-control" type="file" name="auto_drift_xlsx" accept=".xlsx" required>
-                <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
-                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.download_auto_workflow_doc', workflow='part4') }}">Download methodology</a>
-                  <span class="text-muted small">Steps performed (Word .docx or .doc)</span>
+                <div class="mt-2">
+                  <a class="btn btn-sm btn-outline-secondary home-methodology-btn" href="{{ url_for('main.download_auto_workflow_doc', workflow='part4') }}">Download methodology</a>
                 </div>
-                <div class="text-muted small mt-1">Runs outlier and drift detection automatically without requiring a causal matrix upload.</div>
               </div>
               <div class="col-md-6 col-lg-5">
                 <button class="btn btn-primary w-100" type="submit">Run Auto Detection</button>
               </div>
             </div>
           </form>
-          <div class="text-muted small mt-2">
-            Results include a drift summary table and interactive graph per tag.
-          </div>
         </div>
         {% elif active_tab == 'part5' %}
         <div class="card-body pt-3">
@@ -117,11 +112,10 @@
               <div class="col-md-6 col-lg-7">
                 <label class="form-label-sm">Time-Series File (XLSX)</label>
                 <input class="form-control" type="file" name="auto_no_clean_drift_xlsx" accept=".xlsx" required>
-                <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
-                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.download_auto_workflow_doc', workflow='part5') }}">Download methodology</a>
-                  <span class="text-muted small">Steps performed (Word .docx or .doc)</span>
+                <div class="mt-2">
+                  <a class="btn btn-sm btn-outline-secondary home-methodology-btn" href="{{ url_for('main.download_auto_workflow_doc', workflow='part5') }}">Download methodology</a>
                 </div>
-                <div class="text-muted small mt-1">Auto stable window and limits from that window only (without_causal_auto_clean_outlier).</div>
+                <div class="text-muted small mt-2">Auto stable window and limits from that window only (without_causal_auto_clean_outlier).</div>
               </div>
               <div class="col-md-6 col-lg-5">
                 <button class="btn btn-primary w-100" type="submit">Run Auto (No Clean Data)</button>
@@ -139,11 +133,10 @@
               <div class="col-md-6 col-lg-7">
                 <label class="form-label-sm">Time-Series File (XLSX)</label>
                 <input class="form-control" type="file" name="auto_identification_xlsx" accept=".xlsx" required>
-                <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
-                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.download_auto_workflow_doc', workflow='part6') }}">Download methodology</a>
-                  <span class="text-muted small">Steps performed (Word .docx or .doc)</span>
+                <div class="mt-2">
+                  <a class="btn btn-sm btn-outline-secondary home-methodology-btn" href="{{ url_for('main.download_auto_workflow_doc', workflow='part6') }}">Download methodology</a>
                 </div>
-                <div class="text-muted small mt-1">Clean-anchored V3: auto window plus similar-history reference expansion (without_causal_clean_anchored_improved_v3).</div>
+                <div class="text-muted small mt-2">Clean-anchored V3: auto window plus similar-history reference expansion (without_causal_clean_anchored_improved_v3).</div>
               </div>
               <div class="col-md-6 col-lg-5">
                 <button class="btn btn-primary w-100" type="submit">Run Auto Identification</button>
@@ -161,11 +154,10 @@
               <div class="col-md-6 col-lg-7">
                 <label class="form-label-sm">Time-Series File (XLSX)</label>
                 <input class="form-control" type="file" name="auto_testing_v4_xlsx" accept=".xlsx" required>
-                <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
-                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.download_auto_workflow_doc', workflow='part7') }}">Download methodology</a>
-                  <span class="text-muted small">Steps performed (Word .docx or .doc)</span>
+                <div class="mt-2">
+                  <a class="btn btn-sm btn-outline-secondary home-methodology-btn" href="{{ url_for('main.download_auto_workflow_doc', workflow='part7') }}">Download methodology</a>
                 </div>
-                <div class="text-muted small mt-1">Same results layout as Auto (No Clean Data); logic from without_causal_clean_deviation_spike_change_v4.py (clean score + spike/change + clean-like limits).</div>
+                <div class="text-muted small mt-2">Same results layout as Auto (No Clean Data); logic from without_causal_clean_deviation_spike_change_v4.py (clean score + spike/change + clean-like limits).</div>
               </div>
               <div class="col-md-6 col-lg-5">
                 <button class="btn btn-primary w-100" type="submit">Run Testing (V4)</button>
@@ -183,20 +175,15 @@
               <div class="col-md-6 col-lg-7">
                 <label class="form-label-sm">Time-Series File (XLSX)</label>
                 <input class="form-control" type="file" name="auto_testing_v5_xlsx" accept=".xlsx" required>
-                <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
-                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.download_auto_workflow_doc', workflow='part8') }}">Download methodology</a>
-                  <span class="text-muted small">Steps performed (Word .docx or .doc)</span>
+                <div class="mt-2">
+                  <a class="btn btn-sm btn-outline-secondary home-methodology-btn" href="{{ url_for('main.download_auto_workflow_doc', workflow='part8') }}">Download methodology</a>
                 </div>
-                <div class="text-muted small mt-1">Multi-signal outlier detection: clean period without moving average, clean-like limits, and within-limit spike, change, or persistent deviation (without_causal_clean_deviation_spike_change_v5).</div>
               </div>
               <div class="col-md-6 col-lg-5">
                 <button class="btn btn-primary w-100" type="submit">Run outlier detection</button>
               </div>
             </div>
           </form>
-          <div class="text-muted small mt-2">
-            Comparison baseline uses the full timeline (std limits), same as the No Clean Data tab.
-          </div>
         </div>
         {% elif active_tab == 'part9' %}
         <div class="card-body pt-3">
@@ -205,20 +192,15 @@
               <div class="col-md-6 col-lg-7">
                 <label class="form-label-sm">Time-Series File (XLSX)</label>
                 <input class="form-control" type="file" name="auto_testing_v6_xlsx" accept=".xlsx" required>
-                <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
-                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.download_auto_workflow_doc', workflow='part9') }}">Download methodology</a>
-                  <span class="text-muted small">Steps performed (Word .docx or .doc)</span>
+                <div class="mt-2">
+                  <a class="btn btn-sm btn-outline-secondary home-methodology-btn" href="{{ url_for('main.download_auto_workflow_doc', workflow='part9') }}">Download methodology</a>
                 </div>
-                <div class="text-muted small mt-1">Same results layout as other outlier tabs; logic from without_causal_top5_corr_regression_fast.py — top-5 correlated ridge, residual and range rules, no causal matrix.</div>
               </div>
               <div class="col-md-6 col-lg-5">
                 <button class="btn btn-primary w-100" type="submit">Run outlier detection (using data model)</button>
               </div>
             </div>
           </form>
-          <div class="text-muted small mt-2">
-            Wide matrix or All_Results long format; needs at least two numeric tags.
-          </div>
         </div>
         {% elif active_tab == 'part10' %}
         <div class="card-body pt-3">
@@ -227,11 +209,10 @@
               <div class="col-md-6 col-lg-7">
                 <label class="form-label-sm">Time-Series File (XLSX)</label>
                 <input class="form-control" type="file" name="auto_testing_v7_xlsx" accept=".xlsx" required>
-                <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
-                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('main.download_auto_workflow_doc', workflow='part10') }}">Download methodology</a>
-                  <span class="text-muted small">Steps performed (Word .docx or .doc)</span>
+                <div class="mt-2">
+                  <a class="btn btn-sm btn-outline-secondary home-methodology-btn" href="{{ url_for('main.download_auto_workflow_doc', workflow='part10') }}">Download methodology</a>
                 </div>
-                <div class="text-muted small mt-1">Runs <strong>Auto (no causal)</strong>, <strong>Outlier detection</strong>, and <strong>Outlier detection (using data model)</strong> on the same file; fuses labels by <strong>max severity</strong> (Normal &lt; Drift &lt; Contextual Anomaly &lt; Drift + Anomaly &lt; Strong Anomaly). Detail rows include per-engine rationale.</div>
+                <div class="text-muted small mt-2">Runs <strong>Auto (no causal)</strong>, <strong>Outlier detection</strong>, and <strong>Outlier detection (using data model)</strong> on the same file; fuses labels by <strong>max severity</strong> (Normal &lt; Drift &lt; Contextual Anomaly &lt; Drift + Anomaly &lt; Strong Anomaly). Detail rows include per-engine rationale.</div>
               </div>
               <div class="col-md-6 col-lg-5">
                 <button class="btn btn-primary w-100" type="submit">Run Testing (V7)</button>
