@@ -275,6 +275,51 @@ def parse_tag_cols_argument(tag_cols: Optional[str]) -> Optional[list[str]]:
     return [c.strip() for c in tag_cols.split(",") if c.strip()]
 
 
+def _read_excel_first_row_as_column_names(
+    path: Path,
+    sheet_name: str,
+    max_data_rows: Optional[int],
+) -> pd.DataFrame:
+    """
+    Treat the first physical row in the sheet as column headers (tag names + timestamp).
+
+    Pandas default ``header=0`` can mis-handle some methodology/template workbooks
+    (merged cells, odd layouts). Reading with ``header=None`` and promoting row 0
+    keeps Excel row 1 as the definitive header row.
+    """
+    kwargs: dict = {"sheet_name": sheet_name, "header": None}
+    if max_data_rows is not None:
+        kwargs["nrows"] = int(max_data_rows) + 1
+    raw = pd.read_excel(path, **kwargs)
+    if raw.empty:
+        return normalize_columns(raw)
+
+    header_row = raw.iloc[0]
+    new_cols: list[str] = []
+    seen: dict[str, int] = {}
+    for i, v in enumerate(header_row.tolist()):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            base = f"Column_{i}"
+        else:
+            base = str(v).strip()
+            if not base or base.lower() == "nan":
+                base = f"Column_{i}"
+        col = base
+        if col in seen:
+            seen[col] += 1
+            col = f"{base}_{seen[col]}"
+        else:
+            seen[col] = 0
+        new_cols.append(col)
+
+    df = raw.iloc[1:].copy()
+    df.columns = new_cols
+    df = df.reset_index(drop=True)
+    if max_data_rows is not None and len(df) > int(max_data_rows):
+        df = df.iloc[: int(max_data_rows)].reset_index(drop=True)
+    return normalize_columns(df)
+
+
 def detect_wide_tag_cols(df: pd.DataFrame, timestamp_col: str, provided_tag_cols: Optional[list[str]]) -> list[str]:
     if provided_tag_cols:
         missing = [c for c in provided_tag_cols if c not in df.columns]
@@ -297,7 +342,7 @@ def detect_wide_tag_cols(df: pd.DataFrame, timestamp_col: str, provided_tag_cols
 
 def excel_sheet_score(path: Path, sheet_name: str, datetime_format: Optional[str]) -> float:
     try:
-        df = pd.read_excel(path, sheet_name=sheet_name, nrows=500)
+        df = _read_excel_first_row_as_column_names(path, sheet_name, 500)
     except Exception:
         return -1.0
     if df.empty:
@@ -363,7 +408,7 @@ def read_input_file(
                 else:
                     selected_sheet = sheet_scores[0][0]
 
-        df = pd.read_excel(path_obj, sheet_name=selected_sheet, nrows=max_rows)
+        df = _read_excel_first_row_as_column_names(path_obj, selected_sheet, max_rows)
     elif suffix == ".csv":
         df = pd.read_csv(path_obj, nrows=max_rows)
     elif suffix == ".parquet":

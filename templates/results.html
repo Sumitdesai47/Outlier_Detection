@@ -309,17 +309,22 @@
       const xVarsBody = document.getElementById("part4XVarsBody");
       if (!tag || !tableBody) return;
 
-      const allRows = rowsByTag[tag] || [];
-      const rows = allRows.filter(function (r) {
-        return String(r.Final_Class || "").trim() === "Strong Anomaly";
-      });
+      const rowsAll = rowsByTag[tag] || [];
+      const strongOnly = window.__part4StrongAnomalyOnly === true;
+      const rows = strongOnly
+        ? rowsAll.filter(function (r) {
+            return String(r.Final_Class || "").trim() === "Strong Anomaly";
+          })
+        : rowsAll;
       tableBody.innerHTML = "";
       if (rows.length === 0) {
         const tr = document.createElement("tr");
         const td = document.createElement("td");
-        td.colSpan = 4;
+        td.colSpan = 5;
         td.className = "text-muted";
-        td.textContent = "No Strong Anomaly rows for this tag.";
+        td.textContent = strongOnly
+          ? "No Strong Anomaly rows for this tag (other classes are hidden on the Dev tab)."
+          : "No rows for this tag.";
         tr.appendChild(td);
         tableBody.appendChild(tr);
       } else {
@@ -343,6 +348,13 @@
           clsTd.textContent = r.Final_Class === null || r.Final_Class === undefined ? "" : String(r.Final_Class);
           tr.appendChild(clsTd);
 
+          const axTd = document.createElement("td");
+          axTd.style.maxWidth = "520px";
+          axTd.style.whiteSpace = "pre-line";
+          axTd.style.fontSize = "12px";
+          axTd.textContent = r.Anomaly_explanation === null || r.Anomaly_explanation === undefined ? "" : String(r.Anomaly_explanation);
+          tr.appendChild(axTd);
+
           tableBody.appendChild(tr);
         });
       }
@@ -356,7 +368,7 @@
           return n.toFixed(4);
         };
         const classCounts = { drift: 0, driftAnomaly: 0, strong: 0, normal: 0, other: 0 };
-        rows.forEach(function (r) {
+        rowsAll.forEach(function (r) {
           const fc = String(r.Final_Class || "").trim();
           if (fc === "Drift") classCounts.drift += 1;
           else if (fc === "Drift + Anomaly") classCounts.driftAnomaly += 1;
@@ -366,7 +378,7 @@
         });
         limitsBody.innerHTML = "";
         [
-          ["Total timestamps (rows)", String(rows.length), "Total time-stamps for this tag on the current run (after parsing)."],
+          ["Total timestamps (rows)", String(rowsAll.length), "Total time-stamps for this tag on the current run (after parsing)."],
           ["Points classified as Drift", String(classCounts.drift), "Number of timestamps marked as Drift for this tag."],
           ["Points classified as Drift + Anomaly", String(classCounts.driftAnomaly), "Number of timestamps marked as combined Drift + Anomaly."],
           ["Points classified as Strong Anomaly", String(classCounts.strong), "Number of timestamps flagged as Strong Anomaly (highest severity)."],
@@ -519,6 +531,7 @@
           window.__part4LimitsByTag = cfg4.limitsByTag || {};
           window.__part4DriftPointsByTag = cfg4.driftPointsByTag || {};
           window.__part4XVarsByTag = cfg4.xVarsByTag || {};
+          window.__part4StrongAnomalyOnly = !!cfg4.detailTableStrongAnomalyOnly;
           const sel = document.getElementById("part4PrimaryTag");
           if (sel && sel.options.length > 0) {
             showPart4Tag(sel.value);
@@ -543,22 +556,27 @@
       <nav class="sidebar-nav">
         <a class="sidebar-link {% if request.endpoint == 'main.overview_dashboard' %}active{% endif %}" href="{{ url_for('main.overview_dashboard') }}">Dashboard</a>
         {% if database_enabled %}
-        <a class="sidebar-link {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
+        <a class="sidebar-link d-none {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
         <a class="sidebar-link {% if request.endpoint in ('main.live_outlier_results', 'main.live_outlier_result_detail') %}active{% endif %}" href="{{ url_for('main.live_outlier_results') }}">Live Outlier detection</a>
         {% endif %}
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
-        <a class="sidebar-link {% if active_tab == 'part4' %}active{% endif %}" href="{{ url_for('main.index', tab='part4') }}">Auto (No Causal)</a>
+        <a class="sidebar-link d-none {% if active_tab == 'part4' %}active{% endif %}" href="{{ url_for('main.index', tab='part4') }}">Auto (No Causal)</a>
         <a class="sidebar-link d-none {% if active_tab == 'part5' %}active{% endif %}" href="{{ url_for('main.index', tab='part5') }}">Auto (No Clean Data)</a>
         <a class="sidebar-link d-none {% if active_tab == 'part6' %}active{% endif %}" href="{{ url_for('main.index', tab='part6') }}">Auto Identification</a>
         <a class="sidebar-link d-none {% if active_tab == 'part7' %}active{% endif %}" href="{{ url_for('main.index', tab='part7') }}">Testing (V4)</a>
-        <a class="sidebar-link {% if active_tab == 'part8' %}active{% endif %}" href="{{ url_for('main.index', tab='part8') }}">Outlier detection</a>
-        <a class="sidebar-link {% if active_tab == 'part9' %}active{% endif %}" href="{{ url_for('main.index', tab='part9') }}">Outlier detection (using data model)</a>
+        <a class="sidebar-link d-none {% if active_tab == 'part8' %}active{% endif %}" href="{{ url_for('main.index', tab='part8') }}">Outlier detection</a>
+        <a class="sidebar-link d-none {% if active_tab == 'part11' %}active{% endif %}" href="{{ url_for('main.index', tab='part11') }}">Outlier detection combine</a>
+        <a class="sidebar-link d-none {% if active_tab == 'part9' %}active{% endif %}" href="{{ url_for('main.index', tab='part9') }}">Outlier detection (using data model)</a>
+        <a class="sidebar-link d-none {% if active_tab == 'part12' %}active{% endif %}" href="{{ url_for('main.index', tab='part12') }}">Outlier detection (updated logic)</a>
+        <a class="sidebar-link d-none {% if active_tab == 'part13' %}active{% endif %}" href="{{ url_for('main.index', tab='part13') }}">Outlier detection (robust consensus)</a>
+        <a class="sidebar-link {% if active_tab == 'part14' %}active{% endif %}" href="{{ url_for('main.index', tab='part14') }}">Multi-signal consensus outlier</a>
+        <a class="sidebar-link {% if active_tab == 'part15' %}active{% endif %}" href="{{ url_for('main.index', tab='part15') }}">Dev (Outlier detection)</a>
         <a class="sidebar-link d-none {% if active_tab == 'part10' %}active{% endif %}" href="{{ url_for('main.index', tab='part10') }}">Testing (V7)</a>
         {% if database_enabled %}
         <a class="sidebar-link d-none {% if request.endpoint in ('main.data_browse', 'main.data_timeseries_detail', 'main.data_causal_detail') %}active{% endif %}" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
         <a class="sidebar-link d-none {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
-        <a class="sidebar-link {% if request.endpoint == 'main.outlier_excel_upload_page' %}active{% endif %}" href="{{ url_for('main.outlier_excel_upload_page') }}">Live outlier data upload</a>
+        <a class="sidebar-link d-none {% if request.endpoint == 'main.outlier_excel_upload_page' %}active{% endif %}" href="{{ url_for('main.outlier_excel_upload_page') }}">Live outlier data upload</a>
         {% endif %}
       </nav>
       <div class="sidebar-help text-muted">
@@ -778,15 +796,39 @@
 
       {% if part4 %}
       <div class="card part3-card">
+        {% if active_tab == 'part8' %}
+        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Outlier detection results</h2>
+        <p class="text-muted small">V5 deviation / spike / change on uploaded time-series. Status tables list <strong>critical tags</strong> only when you configured them on the form.</p>
+        {% elif active_tab == 'part11' %}
+        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Outlier detection combine results</h2>
+        <p class="text-muted small">Cluster-consistency actual outliers: peer-cluster regression and same-direction support separate isolated breaks from process-wide drift (<code>build_cluster_consistency_actual_outlier.py</code>). Critical-tag filtering matches the form.</p>
+        {% elif active_tab == 'part12' %}
+        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Outlier detection (updated logic) results</h2>
+        <p class="text-muted small">Strict PCA cluster true-outlier logic from <code>build_cluster_pca_strict_outlier.py</code>.</p>
+        {% elif active_tab == 'part13' %}
+        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Outlier detection (robust consensus) results</h2>
+        <p class="text-muted small">High-precision outlier detection from <code>robust_consensus_outlier_workflow.py</code> — Actual outlier when <strong>(peer residual + 3 signals)</strong> or <strong>4 of 5</strong> tests fire; Warning at 2. Isolation downgrades lone Actual rows. Use <strong>Multi-signal consensus</strong> for a slightly looser preset.</p>
+        {% elif active_tab == 'part14' %}
+        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Multi-signal consensus outlier results</h2>
+        <p class="text-muted small"><code>robust_consensus_outlier_workflow.py</code> with <strong>MULTI_SIGNAL_PRESET</strong>: per-tag inner-trim baseline; <strong>S6–S7</strong> trailing long-window and short-vs-long trend z; <strong>S8</strong> early-segment z (vs first ~28% of that tag’s timeline); relaxed S1–S5; Actual at 3 signals. See summary <strong>S6_*</strong>, <strong>S7_*</strong>, <strong>S8_*</strong>, <strong>Baseline_Trim_Each_Tail</strong>, <strong>Threshold_Mode</strong>.</p>
+        {% elif active_tab == 'part15' %}
+        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Dev (Outlier detection) results</h2>
+        <p class="text-muted small">Same engine and <strong>MULTI_SIGNAL_PRESET</strong> as <em>Multi-signal consensus outlier</em>; this tab is for development or parallel runs. See run summary for S6/S7/S8 and baseline parameters.</p>
+        {% elif active_tab == 'part7' %}
+        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Testing (V4) results</h2>
+        <p class="text-muted small">Deviation / spike / change (V4) from time-series data only.</p>
+        {% else %}
         <h2 style="font-size: 18px; margin: 0 0 12px 0;">Auto Outlier + Drift (No Causal)</h2>
         <p class="text-muted small">This run executes outlier and drift detection directly from time-series data only.</p>
+        {% endif %}
 
         <script type="application/json" id="part4-config">{{ {
           "resultId": part4.result_id,
           "rowsByTag": part4.details_by_tag,
           "limitsByTag": part4.tag_limits_by_tag,
           "driftPointsByTag": part4.drift_points_by_tag,
-          "xVarsByTag": part4.x_variables_by_tag
+          "xVarsByTag": part4.x_variables_by_tag,
+          "detailTableStrongAnomalyOnly": active_tab == 'part15'
         }|tojson }}</script>
 
         {% if part4.summary %}
@@ -856,7 +898,7 @@
         </div>
         {% endif %}
 
-        <h3 style="font-size: 15px;">Top tags by drift points</h3>
+        <h3 style="font-size: 15px;">{% if active_tab in ('part8', 'part11') %}Tag status{% else %}Top tags by drift points{% endif %}</h3>
         <div class="table-responsive mb-3">
           <table class="table table-sm table-striped">
             <thead>
@@ -919,7 +961,7 @@
           </table>
         </div>
 
-        <h4 style="font-size: 14px;">Detailed rows for selected tag (Strong Anomaly only)</h4>
+        <h4 style="font-size: 14px;">{% if active_tab == 'part15' %}Strong Anomaly rows only (selected tag){% else %}Detailed rows for selected tag (all classes){% endif %}</h4>
         <div class="table-responsive mb-3">
           <table class="table table-sm table-striped">
             <thead>
@@ -928,6 +970,7 @@
                 <th>Actual Value</th>
                 <th>Predicted Value</th>
                 <th>Final Class</th>
+                <th>Anomaly explanation</th>
               </tr>
             </thead>
             <tbody id="part4RowsTableBody"></tbody>

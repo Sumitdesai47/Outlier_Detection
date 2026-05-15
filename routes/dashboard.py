@@ -33,6 +33,7 @@ from services.anomaly_pipeline import (
 from services.drift_detection_service import build_plot_figure_for_tag, run_drift_detection_on_xlsx
 from services.auto_workflow_docs import DOCS as AUTO_WORKFLOW_DOCS
 from services.auto_without_causal_outlier_drift import (
+    preview_workbook_tags_for_part8,
     run_auto_identification_outlier_drift,
     run_auto_without_causal_outlier_drift,
     run_testing_deviation_spike_v4_outlier_drift,
@@ -40,6 +41,13 @@ from services.auto_without_causal_outlier_drift import (
     run_testing_fusion_v7_outlier_drift,
     run_testing_top5_corr_regression_outlier_drift,
     run_without_clean_data_outlier_drift,
+)
+from services.combined_outlier_workflow import run_combined_outlier_drift_ui
+from services.cluster_zscore_outlier_workflow import run_cluster_zscore_outlier_ui
+from services.dev_outlier_detection_tab import handle_part15_post_request
+from services.robust_consensus_outlier_workflow import (
+    MULTI_SIGNAL_PRESET,
+    run_robust_consensus_outlier_ui,
 )
 from services.json_sanitize import jsonable
 from services.part2_plots import build_part2_target_plot_json
@@ -73,18 +81,18 @@ def _causal_matrix_file_configured() -> bool:
 
 def _resolve_home_tab() -> str:
     q = (request.args.get("tab") or "").strip().lower()
-    if q in {"part2", "part3", "part4", "part5", "part6", "part7", "part8", "part9", "part10"}:
+    if q in {"part2", "part3", "part4", "part5", "part6", "part7", "part8", "part9", "part10", "part11", "part12", "part13", "part14", "part15"}:
         return q
     if q == "db":
-        return "part4"
+        return "part14"
     if _causal_matrix_file_configured():
-        return "part4"
+        return "part14"
     last = session.get("last_workflow")
     if last == "anomaly":
-        return "part4"
+        return "part14"
     if last == "outlier":
-        return "part4"
-    return "part4"
+        return "part14"
+    return "part14"
 
 
 def _has_causal_matrix_context() -> bool:
@@ -2010,6 +2018,30 @@ def part7_auto_testing_deviation_spike_v4():
     )
 
 
+@bp.route("/api/part8/preview-tags", methods=["POST"])
+def api_part8_preview_tags():
+    """Return tag/column names from an uploaded workbook (same detection as Outlier detection tab)."""
+    f = request.files.get("file")
+    if not f or not getattr(f, "filename", None):
+        return jsonify({"ok": False, "error": "Missing file."}), 400
+    try:
+        validate_excel_filename(f.filename)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    path = save_upload_to_temp(f, suffix=".xlsx")
+    try:
+        tags = preview_workbook_tags_for_part8(path)
+    except Exception:
+        logger.exception("part8 preview-tags failed")
+        return jsonify({"ok": False, "error": "Could not read tag columns from this file."}), 400
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return jsonify({"ok": True, "tags": tags})
+
+
 @bp.route("/part8/auto-testing-deviation-spike-v5", methods=["POST"])
 def part8_auto_testing_deviation_spike_v5():
     drift_xlsx = request.files.get("auto_testing_v5_xlsx")
@@ -2022,9 +2054,30 @@ def part8_auto_testing_deviation_spike_v5():
     except ValueError as e:
         return _render_index(active_tab="part8", error=str(e))
 
+    tag_config_used = request.form.get("part8_tag_config") == "1"
+    shutdown_tags = [
+        str(x).strip()
+        for x in request.form.getlist("shutdown_tags")
+        if x and str(x).strip()
+    ]
+    critical_tags = [
+        str(x).strip()
+        for x in request.form.getlist("critical_tags")
+        if x and str(x).strip()
+    ]
+    if tag_config_used and not critical_tags:
+        return _render_index(
+            active_tab="part8",
+            error="Select at least one critical tag (or reload the file to refresh the tag list).",
+        )
+
     try:
         drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
-        result = run_testing_deviation_spike_v5_outlier_drift(drift_xlsx_path)
+        result = run_testing_deviation_spike_v5_outlier_drift(
+            drift_xlsx_path,
+            shutdown_indicator_tags=shutdown_tags or None,
+            critical_tags=critical_tags if tag_config_used else None,
+        )
     except Exception as e:
         logger.exception("Outlier detection upload failed: %s", e)
         return _render_index(
@@ -2074,6 +2127,93 @@ def part8_auto_testing_deviation_spike_v5():
     )
 
 
+@bp.route("/part11/combined-without-causal", methods=["POST"])
+def part11_combined_without_causal():
+    drift_xlsx = request.files.get("auto_testing_combined_xlsx")
+    if not drift_xlsx:
+        return _render_index(active_tab="part11", error="Missing file: auto_testing_combined_xlsx")
+    if not getattr(drift_xlsx, "filename", None):
+        return _render_index(active_tab="part11", error="Please choose an Excel (.xlsx) file.")
+    try:
+        validate_excel_filename(drift_xlsx.filename)
+    except ValueError as e:
+        return _render_index(active_tab="part11", error=str(e))
+
+    tag_config_used = request.form.get("part11_tag_config") == "1"
+    shutdown_tags = [
+        str(x).strip()
+        for x in request.form.getlist("shutdown_tags")
+        if x and str(x).strip()
+    ]
+    critical_tags = [
+        str(x).strip()
+        for x in request.form.getlist("critical_tags")
+        if x and str(x).strip()
+    ]
+    if tag_config_used and not critical_tags:
+        return _render_index(
+            active_tab="part11",
+            error="Select at least one critical tag (or reload the file to refresh the tag list).",
+        )
+
+    try:
+        drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
+        result = run_combined_outlier_drift_ui(
+            drift_xlsx_path,
+            shutdown_indicator_tags=shutdown_tags or None,
+            critical_tags=critical_tags if tag_config_used else None,
+        )
+    except Exception as e:
+        logger.exception("Outlier detection combine upload failed: %s", e)
+        hint = str(e).strip() if str(e) else type(e).__name__
+        return _render_index(
+            active_tab="part11",
+            error=(
+                "Could not process the uploaded file for Outlier detection combine. "
+                "Please verify the Excel format (time + numeric tags, wide or long). "
+                f"Detail: {hint}"
+            ),
+        )
+
+    df_for_script = result.pop("df_for_script")
+    out_df = result.pop("out_df")
+    result_id = uuid.uuid4().hex
+    export_payload = {
+        "tag_summaries": result.get("tag_summaries") or [],
+        "details_by_tag": result.get("details_by_tag") or {},
+        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+    }
+    part3_store(result_id, df_for_script, out_df, export_payload=export_payload)
+
+    session["last_workflow"] = "outlier"
+    session.modified = True
+
+    return render_template(
+        "results.html",
+        part2=None,
+        part3=None,
+        part4={
+            "result_id": result_id,
+            "summary": result.get("summary") or {},
+            "top_tags_by_points": result.get("top_tags_by_points") or [],
+            "tag_names": [t.get("tag") for t in (result.get("tag_summaries") or []) if t.get("tag")],
+            "all_plot_tags": sorted(c for c in df_for_script.columns if c != "Timestamp"),
+            "tag_summaries": result.get("tag_summaries") or [],
+            "drift_points_by_tag": {
+                str(t.get("tag")): int(t.get("num_drift_points") or 0)
+                for t in (result.get("tag_summaries") or [])
+                if t.get("tag")
+            },
+            "details_by_tag": result.get("details_by_tag") or {},
+            "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+            "tag_limits_by_tag": result.get("tag_limits_by_tag") or {},
+            "x_variables_by_tag": result.get("x_variables_by_tag") or {},
+        },
+        active_tab="part11",
+        database_enabled=is_configured(),
+    )
+
+
 @bp.route("/part9/auto-testing-top5-corr-regression-v6", methods=["POST"])
 def part9_auto_testing_top5_corr_regression_v6():
     drift_xlsx = request.files.get("auto_testing_v6_xlsx")
@@ -2091,11 +2231,13 @@ def part9_auto_testing_top5_corr_regression_v6():
         result = run_testing_top5_corr_regression_outlier_drift(drift_xlsx_path)
     except Exception as e:
         logger.exception("Outlier detection (using data model) upload failed: %s", e)
+        hint = str(e).strip() if str(e) else type(e).__name__
         return _render_index(
             active_tab="part9",
             error=(
                 "Could not process the uploaded file for Outlier detection (using data model). "
-                "Please verify the Excel format (Timestamp + numeric tag columns) and try again."
+                "Please verify the Excel format (time + numeric tags, wide or long). "
+                f"Detail: {hint}"
             ),
         )
 
@@ -2134,6 +2276,287 @@ def part9_auto_testing_top5_corr_regression_v6():
             "x_variables_by_tag": result.get("x_variables_by_tag") or {},
         },
         active_tab="part9",
+        database_enabled=is_configured(),
+    )
+
+
+@bp.route("/part12/cluster-zscore-true-outlier", methods=["POST"])
+def part12_cluster_zscore_true_outlier():
+    drift_xlsx = request.files.get("auto_testing_cluster_zscore_xlsx")
+    if not drift_xlsx:
+        return _render_index(active_tab="part12", error="Missing file: auto_testing_cluster_zscore_xlsx")
+    if not getattr(drift_xlsx, "filename", None):
+        return _render_index(active_tab="part12", error="Please choose an Excel (.xlsx) file.")
+    try:
+        validate_excel_filename(drift_xlsx.filename)
+    except ValueError as e:
+        return _render_index(active_tab="part12", error=str(e))
+
+    try:
+        drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
+        result = run_cluster_zscore_outlier_ui(drift_xlsx_path)
+    except Exception as e:
+        logger.exception("Outlier detection (updated logic) upload failed: %s", e)
+        hint = str(e).strip() if str(e) else type(e).__name__
+        return _render_index(
+            active_tab="part12",
+            error=(
+                "Could not process the uploaded file for Outlier detection (updated logic). "
+                "Please verify the Excel format (time + numeric tags, wide or long). "
+                f"Detail: {hint}"
+            ),
+        )
+
+    df_for_script = result.pop("df_for_script")
+    out_df = result.pop("out_df")
+    result_id = uuid.uuid4().hex
+    export_payload = {
+        "tag_summaries": result.get("tag_summaries") or [],
+        "details_by_tag": result.get("details_by_tag") or {},
+        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+    }
+    part3_store(result_id, df_for_script, out_df, export_payload=export_payload)
+
+    session["last_workflow"] = "outlier"
+    session.modified = True
+
+    return render_template(
+        "results.html",
+        part2=None,
+        part3=None,
+        part4={
+            "result_id": result_id,
+            "summary": result.get("summary") or {},
+            "top_tags_by_points": result.get("top_tags_by_points") or [],
+            "tag_names": [t.get("tag") for t in (result.get("tag_summaries") or []) if t.get("tag")],
+            "all_plot_tags": sorted(c for c in df_for_script.columns if c != "Timestamp"),
+            "tag_summaries": result.get("tag_summaries") or [],
+            "drift_points_by_tag": {
+                str(t.get("tag")): int(t.get("num_drift_points") or 0)
+                for t in (result.get("tag_summaries") or [])
+                if t.get("tag")
+            },
+            "details_by_tag": result.get("details_by_tag") or {},
+            "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+            "tag_limits_by_tag": result.get("tag_limits_by_tag") or {},
+            "x_variables_by_tag": result.get("x_variables_by_tag") or {},
+        },
+        active_tab="part12",
+        database_enabled=is_configured(),
+    )
+
+
+@bp.route("/part13/robust-consensus-outlier", methods=["POST"])
+def part13_robust_consensus_outlier():
+    drift_xlsx = request.files.get("auto_testing_robust_consensus_xlsx")
+    if not drift_xlsx:
+        return _render_index(active_tab="part13", error="Missing file: auto_testing_robust_consensus_xlsx")
+    if not getattr(drift_xlsx, "filename", None):
+        return _render_index(active_tab="part13", error="Please choose an Excel (.xlsx) file.")
+    try:
+        validate_excel_filename(drift_xlsx.filename)
+    except ValueError as e:
+        return _render_index(active_tab="part13", error=str(e))
+
+    shutdown_tags = [
+        str(x).strip()
+        for x in request.form.getlist("shutdown_tags")
+        if x and str(x).strip()
+    ]
+    critical_tags = [
+        str(x).strip()
+        for x in request.form.getlist("critical_tags")
+        if x and str(x).strip()
+    ]
+    tag_config_used = request.form.get("part13_tag_config") == "1"
+
+    try:
+        drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
+        result = run_robust_consensus_outlier_ui(
+            drift_xlsx_path,
+            shutdown_indicator_tags=shutdown_tags or None,
+            critical_tags=critical_tags if tag_config_used else None,
+        )
+    except Exception as e:
+        logger.exception("Robust consensus outlier upload failed: %s", e)
+        hint = str(e).strip() if str(e) else type(e).__name__
+        return _render_index(
+            active_tab="part13",
+            error=(
+                "Could not process the uploaded file for Outlier detection (robust consensus). "
+                "Please verify the Excel format (time + numeric tags, wide or long). "
+                f"Detail: {hint}"
+            ),
+        )
+
+    df_for_script = result.pop("df_for_script")
+    out_df = result.pop("out_df")
+    result_id = uuid.uuid4().hex
+    export_payload = {
+        "tag_summaries": result.get("tag_summaries") or [],
+        "details_by_tag": result.get("details_by_tag") or {},
+        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+    }
+    part3_store(result_id, df_for_script, out_df, export_payload=export_payload)
+
+    session["last_workflow"] = "outlier"
+    session.modified = True
+
+    return render_template(
+        "results.html",
+        part2=None,
+        part3=None,
+        part4={
+            "result_id": result_id,
+            "summary": result.get("summary") or {},
+            "top_tags_by_points": result.get("top_tags_by_points") or [],
+            "tag_names": [t.get("tag") for t in (result.get("tag_summaries") or []) if t.get("tag")],
+            "all_plot_tags": sorted(c for c in df_for_script.columns if c != "Timestamp"),
+            "tag_summaries": result.get("tag_summaries") or [],
+            "drift_points_by_tag": {
+                str(t.get("tag")): int(t.get("num_drift_points") or 0)
+                for t in (result.get("tag_summaries") or [])
+                if t.get("tag")
+            },
+            "details_by_tag": result.get("details_by_tag") or {},
+            "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+            "tag_limits_by_tag": result.get("tag_limits_by_tag") or {},
+            "x_variables_by_tag": result.get("x_variables_by_tag") or {},
+        },
+        active_tab="part13",
+        database_enabled=is_configured(),
+    )
+
+
+@bp.route("/part14/multi-signal-consensus-outlier", methods=["POST"])
+def part14_multi_signal_consensus_outlier():
+    """Same code path as part13 but applies MULTI_SIGNAL_PRESET (slightly relaxed, 3-of-5 Actual)."""
+    drift_xlsx = request.files.get("auto_testing_multi_signal_consensus_xlsx")
+    if not drift_xlsx:
+        return _render_index(active_tab="part14", error="Missing file: auto_testing_multi_signal_consensus_xlsx")
+    if not getattr(drift_xlsx, "filename", None):
+        return _render_index(active_tab="part14", error="Please choose an Excel (.xlsx) file.")
+    try:
+        validate_excel_filename(drift_xlsx.filename)
+    except ValueError as e:
+        return _render_index(active_tab="part14", error=str(e))
+
+    shutdown_tags = [
+        str(x).strip()
+        for x in request.form.getlist("shutdown_tags")
+        if x and str(x).strip()
+    ]
+    critical_tags = [
+        str(x).strip()
+        for x in request.form.getlist("critical_tags")
+        if x and str(x).strip()
+    ]
+    tag_config_used = request.form.get("part14_tag_config") == "1"
+
+    try:
+        drift_xlsx_path = save_upload_to_temp(drift_xlsx, suffix=".xlsx")
+        result = run_robust_consensus_outlier_ui(
+            drift_xlsx_path,
+            shutdown_indicator_tags=shutdown_tags or None,
+            critical_tags=critical_tags if tag_config_used else None,
+            config=MULTI_SIGNAL_PRESET,
+            extra_summary={
+                "Run_Preset": "Multi-signal: inner-trim baseline; S6/S7 trailing + trend-gap; S8 early-segment z; relaxed S1-S5; Actual at 3 signals; isolation when <4 signals.",
+            },
+        )
+    except Exception as e:
+        logger.exception("Multi-signal consensus outlier upload failed: %s", e)
+        hint = str(e).strip() if str(e) else type(e).__name__
+        return _render_index(
+            active_tab="part14",
+            error=(
+                "Could not process the uploaded file for Multi-signal consensus outlier. "
+                "Please verify the Excel format (time + numeric tags, wide or long). "
+                f"Detail: {hint}"
+            ),
+        )
+
+    df_for_script = result.pop("df_for_script")
+    out_df = result.pop("out_df")
+    result_id = uuid.uuid4().hex
+    export_payload = {
+        "tag_summaries": result.get("tag_summaries") or [],
+        "details_by_tag": result.get("details_by_tag") or {},
+        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+    }
+    part3_store(result_id, df_for_script, out_df, export_payload=export_payload)
+
+    session["last_workflow"] = "outlier"
+    session.modified = True
+
+    return render_template(
+        "results.html",
+        part2=None,
+        part3=None,
+        part4={
+            "result_id": result_id,
+            "summary": result.get("summary") or {},
+            "top_tags_by_points": result.get("top_tags_by_points") or [],
+            "tag_names": [t.get("tag") for t in (result.get("tag_summaries") or []) if t.get("tag")],
+            "all_plot_tags": sorted(c for c in df_for_script.columns if c != "Timestamp"),
+            "tag_summaries": result.get("tag_summaries") or [],
+            "drift_points_by_tag": {
+                str(t.get("tag")): int(t.get("num_drift_points") or 0)
+                for t in (result.get("tag_summaries") or [])
+                if t.get("tag")
+            },
+            "details_by_tag": result.get("details_by_tag") or {},
+            "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+            "tag_limits_by_tag": result.get("tag_limits_by_tag") or {},
+            "x_variables_by_tag": result.get("x_variables_by_tag") or {},
+        },
+        active_tab="part14",
+        database_enabled=is_configured(),
+    )
+
+
+@bp.route("/part15/dev-outlier-detection", methods=["POST"])
+def part15_dev_outlier_detection():
+    """Dev (Outlier detection) tab — delegated to ``services.dev_outlier_detection_tab``."""
+    err, result = handle_part15_post_request(request)
+    if err or result is None:
+        return _render_index(active_tab="part15", error=err or "Internal error.")
+
+    df_for_script = result.pop("df_for_script")
+    out_df = result.pop("out_df")
+    result_id = uuid.uuid4().hex
+    export_payload = {
+        "tag_summaries": result.get("tag_summaries") or [],
+        "details_by_tag": result.get("details_by_tag") or {},
+        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+    }
+    part3_store(result_id, df_for_script, out_df, export_payload=export_payload)
+
+    session["last_workflow"] = "outlier"
+    session.modified = True
+
+    return render_template(
+        "results.html",
+        part2=None,
+        part3=None,
+        part4={
+            "result_id": result_id,
+            "summary": result.get("summary") or {},
+            "top_tags_by_points": result.get("top_tags_by_points") or [],
+            "tag_names": [t.get("tag") for t in (result.get("tag_summaries") or []) if t.get("tag")],
+            "all_plot_tags": sorted(c for c in df_for_script.columns if c != "Timestamp"),
+            "tag_summaries": result.get("tag_summaries") or [],
+            "drift_points_by_tag": {
+                str(t.get("tag")): int(t.get("num_drift_points") or 0)
+                for t in (result.get("tag_summaries") or [])
+                if t.get("tag")
+            },
+            "details_by_tag": result.get("details_by_tag") or {},
+            "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+            "tag_limits_by_tag": result.get("tag_limits_by_tag") or {},
+            "x_variables_by_tag": result.get("x_variables_by_tag") or {},
+        },
+        active_tab="part15",
         database_enabled=is_configured(),
     )
 

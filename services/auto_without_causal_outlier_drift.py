@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -33,11 +33,177 @@ def _safe_float(v: Any) -> float | None:
         return None
 
 
+# Values at or below this (after coercion) count as plant off: 0, negatives, and tiny positives / float noise.
+DEFAULT_PLANT_OFF_MAX_VALUE = 1e-6
+
+
+def wide_rows_plant_indicator_off(
+    wide: pd.DataFrame,
+    indicator_tag_names: Sequence[str],
+    *,
+    plant_off_max_value: float = DEFAULT_PLANT_OFF_MAX_VALUE,
+) -> pd.Series:
+    """
+    Per-row mask: True if the plant should be treated as off for that timestamp.
+
+    For each *selected* plant-status column, numeric values **<= plant_off_max_value**
+    (default: near zero, including 0 and small positives from float noise) drop that
+    timestamp from analysis and charts. Indicator columns stay in the wide matrix.
+    Any selected indicator off → drop the whole wide row (OR across indicators).
+    """
+    cap = float(plant_off_max_value)
+    mask = pd.Series(False, index=wide.index)
+    for name in indicator_tag_names:
+        col = str(name).strip()
+        if not col or col not in wide.columns:
+            continue
+        v = pd.to_numeric(wide[col], errors="coerce")
+        off = v.notna() & (v <= cap)
+        mask |= off
+    return mask
+
+
+def clip_plot_inputs_to_wide_timestamps(
+    wide_plot: pd.DataFrame,
+    out_df: pd.DataFrame,
+    wide: pd.DataFrame,
+    *,
+    ts_name: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Restrict line-plot wide and event rows to timestamps still present in ``wide``
+    after plant-status row removal so graphs never show dropped timestamps.
+    """
+    if wide.empty or ts_name not in wide.columns:
+        return wide_plot, out_df
+    allow = pd.unique(pd.to_datetime(wide[ts_name], errors="coerce").dropna())
+    if len(allow) == 0:
+        return wide_plot, out_df
+    wp = wide_plot
+    od = out_df
+    if not wp.empty and "Timestamp" in wp.columns:
+        tp = pd.to_datetime(wp["Timestamp"], errors="coerce")
+        wp = wp.loc[tp.isin(allow)].copy()
+        if "Timestamp" in wp.columns:
+            wp = wp.sort_values("Timestamp").reset_index(drop=True)
+    if not od.empty and "Timestamp" in od.columns:
+        tout = pd.to_datetime(od["Timestamp"], errors="coerce")
+        od = od.loc[tout.isin(allow)].copy().reset_index(drop=True)
+    return wp, od
+
+
+def filter_rows_to_wide_timestamps(
+    df: pd.DataFrame,
+    wide: pd.DataFrame,
+    *,
+    ts_col: str = "Timestamp",
+    wide_ts_col: str | None = None,
+) -> pd.DataFrame:
+    """
+    Keep only rows whose Timestamp appears in the wide matrix index/column.
+
+    Used after plant-off / shutdown row removal so long-form results, summaries,
+    and plots cannot retain timestamps that were dropped from the working wide data.
+    """
+    if df.empty or wide.empty or ts_col not in df.columns:
+        return df
+    wcol = wide_ts_col or ts_col
+    if wcol not in wide.columns:
+        return df
+    allow = pd.unique(pd.to_datetime(wide[wcol], errors="coerce").dropna())
+    if len(allow) == 0:
+        return df
+    ts = pd.to_datetime(df[ts_col], errors="coerce")
+    return df.loc[ts.isin(allow)].copy()
+
+
 def _format_ts(v: Any) -> str:
     ts = pd.to_datetime(v, errors="coerce")
     if pd.isna(ts):
         return str(v) if v is not None else ""
     return ts.strftime("%m/%d/%Y %H:%M")
+
+
+def preview_workbook_tags_for_part8(file_path: str) -> List[str]:
+    """Return sorted unique tag names from a workbook using the same wide/long detection as part8."""
+    module = _load_auto_without_causal_module()
+    raw_df, _ = module.read_input_file(
+        file_path, sheet_name=None, max_rows=5000, datetime_format=None
+    )
+    timestamp_col = module.detect_timestamp_col(
+        raw_df, override=None, datetime_format=None
+    )
+    tag_cols_arg = module.parse_tag_cols_argument(None)
+    long_df, _, _, _, _ = module.make_long_format(
+        raw_df,
+        timestamp_col=timestamp_col,
+        tag_col=None,
+        value_col=None,
+        tag_cols=tag_cols_arg,
+        datetime_format=None,
+    )
+    return sorted(
+        {str(x).strip() for x in long_df["Tag"].dropna().unique() if str(x).strip()}
+    )
+
+
+def _v5_apply_critical_display_filter(
+    bundle: Dict[str, Any],
+    *,
+    tag_cols: List[str],
+    critical_tags: Optional[Sequence[str]],
+) -> None:
+    if not critical_tags:
+        return
+    crit = {
+        str(t).strip()
+        for t in critical_tags
+        if t is not None and str(t).strip()
+    }
+    crit &= set(tag_cols)
+    if not crit:
+        bundle["tag_summaries"] = []
+        bundle["top_tags_by_points"] = []
+        bundle["details_by_tag"] = {}
+        bundle["monthly_pages_by_tag"] = {}
+        bundle["tag_limits_by_tag"] = {}
+        bundle["x_variables_by_tag"] = {}
+        return
+
+    summaries = [
+        s
+        for s in (bundle.get("tag_summaries") or [])
+        if str(s.get("tag")) in crit
+    ]
+    seen = {str(s.get("tag")) for s in summaries}
+    for t in sorted(crit):
+        if t not in seen:
+            summaries.append(
+                {
+                    "tag": t,
+                    "status": "Normal",
+                    "drift_timestamp": None,
+                    "num_drift_points": 0,
+                }
+            )
+
+    def _sort_key(s: Dict[str, Any]) -> Tuple[int, int, str]:
+        pts = int(s.get("num_drift_points") or 0)
+        is_normal = 1 if pts == 0 else 0
+        return (is_normal, -pts, str(s.get("tag") or ""))
+
+    summaries = sorted(summaries, key=_sort_key)
+    bundle["tag_summaries"] = summaries
+    bundle["top_tags_by_points"] = summaries
+
+    dbt = bundle.get("details_by_tag") or {}
+    bundle["details_by_tag"] = {k: v for k, v in dbt.items() if k in crit}
+    mby = bundle.get("monthly_pages_by_tag") or {}
+    bundle["monthly_pages_by_tag"] = {k: v for k, v in mby.items() if k in crit}
+    tlb = bundle.get("tag_limits_by_tag") or {}
+    bundle["tag_limits_by_tag"] = {k: v for k, v in tlb.items() if k in crit}
+    xvb = bundle.get("x_variables_by_tag") or {}
+    bundle["x_variables_by_tag"] = {k: v for k, v in xvb.items() if k in crit}
 
 
 def _build_reason(final_class: Any, direction: Any, limit_crossed: Any) -> str:
@@ -1430,7 +1596,12 @@ def _run_deviation_spike_v4_testing_pipeline(file_path: str) -> Dict[str, Any]:
     }
 
 
-def _run_deviation_spike_v5_testing_pipeline(file_path: str) -> Dict[str, Any]:
+def _run_deviation_spike_v5_testing_pipeline(
+    file_path: str,
+    *,
+    shutdown_indicator_tags: Optional[Sequence[str]] = None,
+    critical_tags: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
     """
     Outlier detection tab (part8): without_causal_clean_deviation_spike_change_v5.py
     Clean period without moving average; clean-like limits; outside- and
@@ -1459,8 +1630,63 @@ def _run_deviation_spike_v5_testing_pipeline(file_path: str) -> Dict[str, Any]:
     if pivot.shape[1] == 0:
         raise ValueError("No tag columns after pivot; check input format.")
 
-    wide = pivot.reset_index()
     ts_name = "Timestamp"
+    wide = pivot.reset_index()
+    wide[ts_name] = pd.to_datetime(wide[ts_name], errors="coerce")
+    wide = wide.dropna(subset=[ts_name]).sort_values(ts_name).reset_index(drop=True)
+    tag_cols = [c for c in wide.columns if c != ts_name]
+    for c in tag_cols:
+        wide[c] = pd.to_numeric(wide[c], errors="coerce")
+
+    shutdown_set: set[str] = set()
+    if shutdown_indicator_tags:
+        shutdown_set = {
+            str(t).strip()
+            for t in shutdown_indicator_tags
+            if t is not None and str(t).strip()
+        }
+        shutdown_set = {t for t in shutdown_set if t in wide.columns}
+
+    rows_before_shutdown = len(wide)
+    removed_shutdown = 0
+    if shutdown_set:
+        is_shut = wide_rows_plant_indicator_off(wide, sorted(shutdown_set))
+        wide = wide.loc[~is_shut].reset_index(drop=True)
+        removed_shutdown = rows_before_shutdown - len(wide)
+
+    tag_cols = [c for c in wide.columns if c != ts_name]
+
+    if wide.empty:
+        raise ValueError(
+            "All rows were removed after plant-status filtering (indicator at/near zero). "
+            "Adjust plant-status tags or check the spreadsheet."
+        )
+    if not tag_cols:
+        raise ValueError("No tag columns left after plant-status filtering.")
+
+    long_df = wide.melt(
+        id_vars=[ts_name],
+        value_vars=tag_cols,
+        var_name="Tag",
+        value_name="Actual_Value",
+    )
+    long_df = long_df.rename(columns={ts_name: "Timestamp"})
+    long_df["Timestamp"] = module.safe_to_datetime(
+        long_df["Timestamp"], datetime_format=None
+    )
+    long_df["Tag"] = long_df["Tag"].astype(str).str.strip()
+    long_df["Actual_Value"] = pd.to_numeric(long_df["Actual_Value"], errors="coerce")
+    long_df = long_df.dropna(subset=["Timestamp", "Tag", "Actual_Value"])
+    long_df = long_df[long_df["Tag"].str.lower().ne("nan")]
+    long_df = long_df.sort_values(["Timestamp", "Tag"]).reset_index(drop=True)
+    if long_df.empty:
+        raise ValueError("No valid rows after shutdown filtering.")
+
+    pivot = module.build_pivot(long_df)
+    if pivot.shape[1] == 0:
+        raise ValueError("No tag columns after shutdown filtering.")
+
+    wide = pivot.reset_index()
     wide[ts_name] = pd.to_datetime(wide[ts_name], errors="coerce")
     wide = wide.dropna(subset=[ts_name]).sort_values(ts_name).reset_index(drop=True)
     tag_cols = [c for c in wide.columns if c != ts_name]
@@ -1476,6 +1702,10 @@ def _run_deviation_spike_v5_testing_pipeline(file_path: str) -> Dict[str, Any]:
     )
     all_results = v5.generate_without_causal_all_results(
         wide, tag_cols, ts_name, limits_df, cfg
+    )
+    # Remove any long-form rows for timestamps not present in post-shutdown wide data (plant-off rows).
+    all_results = filter_rows_to_wide_timestamps(
+        all_results, wide, ts_col="Timestamp", wide_ts_col=ts_name
     )
 
     result_df = all_results.copy()
@@ -1506,6 +1736,17 @@ def _run_deviation_spike_v5_testing_pipeline(file_path: str) -> Dict[str, Any]:
     summary["Drift_Z"] = cfg["drift_z"]
     summary["Drift_Anomaly_Z"] = cfg["drift_anomaly_z"]
     summary["Strong_Anomaly_Z"] = cfg["strong_anomaly_z"]
+    if shutdown_set:
+        summary["Shutdown_Filter_Tags"] = ", ".join(sorted(shutdown_set))
+        summary["Shutdown_Rows_Removed"] = int(removed_shutdown)
+    if critical_tags:
+        crit_lbl = {
+            str(t).strip()
+            for t in critical_tags
+            if t is not None and str(t).strip()
+        } & set(tag_cols)
+        if crit_lbl:
+            summary["Critical_Tags_Display_Only"] = ", ".join(sorted(crit_lbl))
 
     clean_start = pd.Series(pivot.index).min()
     clean_end = pd.Series(pivot.index).max()
@@ -1517,9 +1758,9 @@ def _run_deviation_spike_v5_testing_pipeline(file_path: str) -> Dict[str, Any]:
     )
     global_limits_df = module.add_threshold_columns(
         global_limits_df,
-        drift_z=3.0,
-        drift_anomaly_z=3.5,
-        strong_z=5.0,
+        drift_z=float(cfg["drift_z"]),
+        drift_anomaly_z=float(cfg["drift_anomaly_z"]),
+        strong_z=float(cfg["strong_anomaly_z"]),
     )
     global_result_df = module.classify_results(
         long_df,
@@ -1619,7 +1860,12 @@ def _run_deviation_spike_v5_testing_pipeline(file_path: str) -> Dict[str, Any]:
     abnormal = result_df[result_df["Final_Status"] == "Abnormal"].copy()
     if abnormal.empty:
         wide_plot, out_df = _build_plot_inputs(result_df)
-        return {
+        if shutdown_set:
+            wide_plot, out_df = clip_plot_inputs_to_wide_timestamps(
+                wide_plot, out_df, wide, ts_name=ts_name
+            )
+            summary["Plant_Off_Treat_As_Max_Value"] = DEFAULT_PLANT_OFF_MAX_VALUE
+        out_empty: Dict[str, Any] = {
             "summary": summary,
             "top_tags_by_points": [],
             "tag_summaries": [],
@@ -1631,6 +1877,10 @@ def _run_deviation_spike_v5_testing_pipeline(file_path: str) -> Dict[str, Any]:
             "tag_limits_by_tag": tag_limits_by_tag,
             "x_variables_by_tag": x_variables_by_tag,
         }
+        _v5_apply_critical_display_filter(
+            out_empty, tag_cols=tag_cols, critical_tags=critical_tags
+        )
+        return out_empty
 
     tag_summaries: List[Dict[str, Any]] = []
     details_by_tag: Dict[str, List[Dict[str, Any]]] = {}
@@ -1712,8 +1962,12 @@ def _run_deviation_spike_v5_testing_pipeline(file_path: str) -> Dict[str, Any]:
     )[:10]
 
     wide_plot, out_df = _build_plot_inputs(result_df)
+    if shutdown_set:
+        wide_plot, out_df = clip_plot_inputs_to_wide_timestamps(
+            wide_plot, out_df, wide, ts_name=ts_name
+        )
 
-    return {
+    out = {
         "summary": summary,
         "top_tags_by_points": top_tags_by_points,
         "tag_summaries": tag_summaries,
@@ -1725,6 +1979,12 @@ def _run_deviation_spike_v5_testing_pipeline(file_path: str) -> Dict[str, Any]:
         "tag_limits_by_tag": tag_limits_by_tag,
         "x_variables_by_tag": x_variables_by_tag,
     }
+    if shutdown_set:
+        summary["Plant_Off_Treat_As_Max_Value"] = DEFAULT_PLANT_OFF_MAX_VALUE
+    _v5_apply_critical_display_filter(
+        out, tag_cols=tag_cols, critical_tags=critical_tags
+    )
+    return out
 
 
 def run_auto_without_causal_outlier_drift(file_path: str) -> Dict[str, Any]:
@@ -1761,45 +2021,76 @@ def run_testing_deviation_spike_v4_outlier_drift(file_path: str) -> Dict[str, An
     return _run_deviation_spike_v4_testing_pipeline(file_path)
 
 
-def run_testing_deviation_spike_v5_outlier_drift(file_path: str) -> Dict[str, Any]:
+def run_testing_deviation_spike_v5_outlier_drift(
+    file_path: str,
+    *,
+    shutdown_indicator_tags: Optional[Sequence[str]] = None,
+    critical_tags: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
     """
     Outlier detection: no moving average + within-limit spike/change/deviation
     (without_causal_clean_deviation_spike_change_v5).
     """
-    return _run_deviation_spike_v5_testing_pipeline(file_path)
+    return _run_deviation_spike_v5_testing_pipeline(
+        file_path,
+        shutdown_indicator_tags=shutdown_indicator_tags,
+        critical_tags=critical_tags,
+    )
 
 
 def _load_top5_corr_workbook(
     file_path: str, t5_mod: Any
 ) -> Tuple[pd.DataFrame, str, List[str], str | None]:
-    """Try first sheet, then All_Results; need >=2 numeric tag columns."""
-    last_err: Exception | None = None
-    for sheet in (None, "All_Results"):
-        try:
-            df, ts = t5_mod.load_process_data(
-                file_path,
-                sheet,
-                t5_mod.DEFAULTS["timestamp_col"],
-                t5_mod.DEFAULTS["tag_col"],
-                t5_mod.DEFAULTS["value_col"],
-            )
-            df = t5_mod.clean_column_names(df)
-            df[ts] = t5_mod.normalize_timestamp(df[ts])
-            df = df.dropna(subset=[ts]).sort_values(ts).reset_index(drop=True)
-            tag_cols = t5_mod.get_numeric_tags(df, ts)
-            if len(tag_cols) >= 2:
-                sheet_label = None if sheet is None else str(sheet)
-                return df, ts, tag_cols, sheet_label
-            last_err = ValueError(
-                f"Need at least 2 numeric tags; found {len(tag_cols)} on sheet {sheet!r}."
-            )
-        except Exception as exc:
-            last_err = exc
+    """Build wide tag matrix the same way as part8 (best sheet, headers, long or wide)."""
+    _ = t5_mod  # call sites pass top5 module; loading uses auto_without_causal script helpers
+    module = _load_auto_without_causal_module()
+    raw_df, selected_sheet = module.read_input_file(
+        file_path, sheet_name=None, max_rows=None, datetime_format=None
+    )
+    if raw_df.empty:
+        raise ValueError("Selected sheet is empty.")
+    timestamp_col = module.detect_timestamp_col(raw_df, override=None, datetime_format=None)
+    tag_cols_arg = module.parse_tag_cols_argument(None)
+    long_df, _input_format, _dts, _dtag, _dval = module.make_long_format(
+        raw_df,
+        timestamp_col=timestamp_col,
+        tag_col=None,
+        value_col=None,
+        tag_cols=tag_cols_arg,
+        datetime_format=None,
+    )
+    pivot = module.build_pivot(long_df)
+    if pivot.shape[1] == 0:
+        raise ValueError("No tag columns after pivot; check input format.")
+
+    ts_name = "Timestamp"
+    wide = pivot.reset_index()
+    wide[ts_name] = pd.to_datetime(wide[ts_name], errors="coerce")
+    wide = wide.dropna(subset=[ts_name]).sort_values(ts_name).reset_index(drop=True)
+
+    tag_cols: List[str] = []
+    for c in wide.columns:
+        if c == ts_name:
             continue
-    msg = "Could not load XLSX for top-5 regression (need timestamp + >=2 numeric tags)."
-    if last_err is not None:
-        msg = f"{msg} Last error: {last_err}"
-    raise ValueError(msg)
+        x = pd.to_numeric(wide[c], errors="coerce")
+        if x.notna().sum() >= 5:
+            wide[c] = x
+            tag_cols.append(c)
+    if len(tag_cols) < 2:
+        tag_cols = []
+        for c in wide.columns:
+            if c == ts_name:
+                continue
+            x = pd.to_numeric(wide[c], errors="coerce")
+            if x.notna().sum() > 0:
+                wide[c] = x
+                tag_cols.append(c)
+    if len(tag_cols) < 2:
+        raise ValueError(
+            "Need at least two numeric tag columns. "
+            "Use a wide sheet (time + tag columns) or long format (time, tag name, value)."
+        )
+    return wide, ts_name, tag_cols, selected_sheet
 
 
 def _run_top5_corr_regression_testing_pipeline(file_path: str) -> Dict[str, Any]:

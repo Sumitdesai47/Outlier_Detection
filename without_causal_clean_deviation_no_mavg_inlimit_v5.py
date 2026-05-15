@@ -68,10 +68,10 @@ CONFIG = {
     "outside_persistence_points": 2,
     "inlimit_deviation_persistence_points": 2,
 
-    # Severity thresholds
-    "drift_z": 3.0,
-    "drift_anomaly_z": 3.5,
-    "strong_anomaly_z": 5.0,
+    # Severity thresholds (|z| vs clean baseline for drift / drift+anomaly / strong)
+    "drift_z": 4.0,
+    "drift_anomaly_z": 4.5,
+    "strong_anomaly_z": 7.0,
 
     "std_epsilon": 1e-9,
 }
