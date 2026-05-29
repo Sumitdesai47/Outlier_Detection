@@ -26,8 +26,14 @@ def database_url() -> Optional[str]:
     return None
 
 
+def _mysql_explicitly_enabled() -> bool:
+    """MySQL is opt-in: set ENABLE_MYSQL=1 in .env when DATABASE_URL should be used."""
+    raw = (os.environ.get("ENABLE_MYSQL") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def is_configured() -> bool:
-    return database_url() is not None
+    return _mysql_explicitly_enabled() and database_url() is not None
 
 
 def ping_mysql() -> tuple[bool, str | None]:
@@ -36,6 +42,8 @@ def ping_mysql() -> tuple[bool, str | None]:
     Use this to tell connection/auth issues from application SQL errors.
     """
     if not is_configured():
+        if not _mysql_explicitly_enabled():
+            return False, "MySQL is disabled (set ENABLE_MYSQL=1 and DATABASE_URL in .env to enable)."
         return False, "DATABASE_URL is not set or does not start with mysql://"
     try:
         with get_connection() as conn:

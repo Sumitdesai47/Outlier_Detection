@@ -11,7 +11,7 @@ from routes.dashboard import register
 from services.scheduler_service import init_scheduler_if_enabled
 
 APP_ROOT = Path(__file__).resolve().parent
-# Optional local config (gitignored): DATABASE_URL, FLASK_SECRET_KEY, etc.
+# Optional local config (gitignored): ENABLE_MYSQL, DATABASE_URL, FLASK_SECRET_KEY, etc.
 load_dotenv(APP_ROOT / ".env")
 
 app = Flask(__name__, root_path=str(APP_ROOT))
