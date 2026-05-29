@@ -3,7 +3,7 @@
   <div class="consensus-header d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
     <div>
       <h2 class="consensus-title mb-1">{% if active_tab == "part15" %}Dev (Outlier detection){% elif active_tab == "part16" %}Multimodel Outlier Detection{% else %}Multi-signal consensus outlier{% endif %} results</h2>
-      <p class="text-muted small mb-0">Executive view of anomalies, drift, correlations, and root-cause insights.</p>
+      <p class="text-muted small mb-0">Executive view of anomalies, correlations, and per-tag event details.</p>
     </div>
   </div>
 
@@ -14,12 +14,8 @@
       <div class="consensus-kpi-value">{{ ex.total_tags_analyzed }}</div>
     </div>
     <div class="consensus-kpi-card">
-      <div class="consensus-kpi-label" title="Timestamps classified as drift across all tags">Total Drift Events</div>
-      <div class="consensus-kpi-value text-warning">{{ ex.total_drift_events }}</div>
-    </div>
-    <div class="consensus-kpi-card">
-      <div class="consensus-kpi-label" title="All flagged anomaly events (non-normal)">Total Outliers</div>
-      <div class="consensus-kpi-value text-critical">{{ ex.total_outliers }}</div>
+      <div class="consensus-kpi-label" title="Timestamps classified as Strong Anomaly across all tags">Total Strong Outliers</div>
+      <div class="consensus-kpi-value text-critical">{{ ex.total_strong_outliers }}</div>
     </div>
     <div class="consensus-kpi-card">
       <div class="consensus-kpi-label" title="Time range covered by uploaded data">Analysis Period</div>
@@ -42,7 +38,6 @@
     {% endif %}
     <li class="nav-item"><button type="button" class="nav-link" data-consensus-tab="tags" onclick="consensusShowTab('tags')">Tag Analysis</button></li>
     <li class="nav-item"><button type="button" class="nav-link" data-consensus-tab="graph" onclick="consensusShowTab('graph')">Graph &amp; Correlation</button></li>
-    <li class="nav-item"><button type="button" class="nav-link" data-consensus-tab="insights" onclick="consensusShowTab('insights')">Root Cause &amp; Insights</button></li>
     <li class="nav-item"><button type="button" class="nav-link" data-consensus-tab="events" onclick="consensusShowTab('events')">Event Details</button></li>
     <li class="nav-item"><button type="button" class="nav-link" data-consensus-tab="downloads" onclick="consensusShowTab('downloads')">Downloads</button></li>
   </ul>
@@ -113,18 +108,10 @@
           {% endfor %}
         </select>
       </div>
-      <div class="col-lg-4">
+      <div class="col-lg-8">
         <label class="form-label-sm">Compare tags (multi-select)</label>
         <select id="part4AllTagsSelect" class="form-select form-select-sm w-100" multiple size="6" onchange="onPart4AllTagsSelectChange()"></select>
         <div class="text-muted small mt-1">Ctrl/Cmd + click for multiple overlays. Use chart zoom for date focus.</div>
-      </div>
-      <div class="col-lg-2">
-        <label for="consensusChartDateFrom" class="form-label-sm">From date</label>
-        <input id="consensusChartDateFrom" class="form-control form-control-sm" type="date" onchange="consensusApplyChartDateFilter()">
-      </div>
-      <div class="col-lg-2">
-        <label for="consensusChartDateTo" class="form-label-sm">To date</label>
-        <input id="consensusChartDateTo" class="form-control form-control-sm" type="date" onchange="consensusApplyChartDateFilter()">
       </div>
     </div>
     <div id="consensusCorrelationSummary" class="consensus-insight-card mb-3"></div>
@@ -132,7 +119,8 @@
     <div class="chart-surface mb-3">
       <div id="part4PlotHost" class="plot-host" style="min-height: 520px;"></div>
     </div>
-    <h4 class="consensus-section-title">{% if active_tab == 'part16' %}Model features (6-stage selection){% else %}Correlated tags{% endif %}</h4>
+    {% if active_tab != 'part16' %}
+    <h4 class="consensus-section-title">Correlated tags</h4>
     <div class="table-responsive">
       <table class="table table-sm table-striped consensus-table">
         <thead>
@@ -146,16 +134,7 @@
         <tbody id="part4XVarsBody"></tbody>
       </table>
     </div>
-  </div>
-
-  <div id="consensusTab_insights" class="consensus-tab-pane" style="display:none;">
-    <div class="row mb-3 g-2 align-items-end">
-      <div class="col-md-6">
-        <label for="consensusInsightTag" class="form-label-sm">Select tag for insights</label>
-        <select id="consensusInsightTag" class="form-select form-select-sm" onchange="consensusRenderInsights(this.value)"></select>
-      </div>
-    </div>
-    <div id="consensusInsightsPanel" class="consensus-insights-panel"></div>
+    {% endif %}
   </div>
 
   <div id="consensusTab_events" class="consensus-tab-pane" style="display:none;">
@@ -176,6 +155,7 @@
             <th>Actual Value</th>
             <th>Predicted Value</th>
             <th>Final Class</th>
+            <th>Reason</th>
             <th>Explanation</th>
           </tr>
         </thead>

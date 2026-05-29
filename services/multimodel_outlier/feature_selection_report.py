@@ -119,7 +119,7 @@ def compute_selector_votes(
 def compute_stability_scores(
     X: pd.DataFrame, y: pd.Series, cols: Sequence[str], cfg: Dict[str, Any]
 ) -> Dict[str, float]:
-    n_boot = int(cfg.get("stage6_bootstrap_n") or 12)
+    n_boot = int(cfg.get("stage6_bootstrap_n") or 5)
     col_list = [str(c) for c in cols]
     counts: Dict[str, int] = {c: 0 for c in col_list}
     yy = pd.to_numeric(y, errors="coerce")
@@ -129,14 +129,21 @@ def compute_stability_scores(
         return {c: 0.0 for c in col_list}
     sub_all = sub_all.loc[mask].fillna(0.0)
     yy = yy.loc[mask]
-    rng = np.random.default_rng(int(cfg.get("random_state") or 42))
+    # Cap bootstrap data size for speed.
+    max_sel = int(cfg.get("max_selection_sample") or 1500)
     n = len(sub_all)
+    rng = np.random.default_rng(int(cfg.get("random_state") or 42))
+    if n > max_sel:
+        cap_idx = np.sort(rng.choice(n, size=max_sel, replace=False))
+        sub_all = sub_all.iloc[cap_idx]
+        yy = yy.iloc[cap_idx]
+        n = max_sel
     for _ in range(n_boot):
         idx = rng.choice(n, size=int(n * 0.8), replace=True)
         sub = sub_all.iloc[idx]
         yb = yy.iloc[idx]
         try:
-            enet = ElasticNetCV(cv=3, random_state=42, max_iter=1500)
+            enet = ElasticNetCV(cv=3, random_state=42, max_iter=800)
             xs = np.asarray(sub.values, dtype=float).copy()
             yv = np.asarray(yb.values, dtype=float).copy()
             enet.fit(xs, yv)

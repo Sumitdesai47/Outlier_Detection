@@ -15,6 +15,21 @@ def _numeric_frame(df: pd.DataFrame, cols: Sequence[str]) -> pd.DataFrame:
     return out.replace([np.inf, -np.inf], np.nan)
 
 
+def _subsample(
+    sub: pd.DataFrame,
+    yy: pd.Series,
+    max_n: int,
+    seed: int = 42,
+) -> Tuple[pd.DataFrame, pd.Series]:
+    """Random subsample when n > max_n. Keeps indices aligned."""
+    n = len(sub)
+    if n <= max_n:
+        return sub, yy
+    idx = np.random.default_rng(seed).choice(n, size=max_n, replace=False)
+    idx = np.sort(idx)
+    return sub.iloc[idx], yy.iloc[idx]
+
+
 def stage1_raw_features(
     df: pd.DataFrame,
     target_tag: str,
@@ -26,7 +41,7 @@ def stage1_raw_features(
     y = pd.to_numeric(df[target_tag], errors="coerce")
     feats: Dict[str, pd.Series] = {"raw_target": y}
 
-    for w in cfg.get("rolling_windows") or [9, 31, 72]:
+    for w in cfg.get("rolling_windows") or [9, 31]:
         r = y.rolling(w, min_periods=max(3, w // 3))
         feats[f"roll_mean_{w}"] = r.mean()
         feats[f"roll_std_{w}"] = r.std()
@@ -34,9 +49,11 @@ def stage1_raw_features(
         feats[f"roll_max_{w}"] = r.max()
     feats["diff1"] = y.diff()
     feats["resid_roll31"] = y - y.rolling(31, min_periods=10).mean()
+    feats["baseline_resid"] = y - y.expanding(min_periods=10).median()
+    feats["diff_abs"] = y.diff().abs()
 
     peers = [c for c in tag_cols if str(c) != str(target_tag)]
-    max_peers = int(cfg.get("max_peer_features") or 8)
+    max_peers = int(cfg.get("max_peer_features") or 5)
     if peers:
         peers_df = _numeric_frame(df, peers)
         corr = peers_df.corrwith(y, axis=0).dropna().abs().sort_values(ascending=False)
@@ -48,13 +65,12 @@ def stage1_raw_features(
         ts = pd.to_datetime(df[ts_col], errors="coerce")
         feats["hour"] = ts.dt.hour.astype(float)
         feats["dow"] = ts.dt.dayofweek.astype(float)
-        feats["weekend"] = (ts.dt.dayofweek >= 5).astype(float)
 
     frac = float(cfg.get("early_segment_fraction") or 0.28)
     n_early = max(10, int(len(df) * frac))
     early = pd.Series(0.0, index=df.index)
     early.iloc[:n_early] = 1.0
-    feats["early_segment"] = early
+    feats["early_segment_flag"] = early
 
     X = pd.DataFrame(feats, index=df.index)
     return X
@@ -96,24 +112,36 @@ def stage4_relevance(X: pd.DataFrame, y: pd.Series, cols: List[str], cfg: Dict[s
     yy = pd.to_numeric(y, errors="coerce")
     mask = yy.notna() & sub.notna().all(axis=1)
     if mask.sum() < 40:
-        return cols[: int(cfg.get("stage4_top_k") or 20)]
+        return cols[: int(cfg.get("stage4_top_k") or 12)]
     sub = sub.loc[mask].fillna(0.0)
     yy = yy.loc[mask]
-    top_k = min(int(cfg.get("stage4_top_k") or 20), len(cols))
+
+    # Subsample for expensive MI + F computation.
+    max_sel = int(cfg.get("max_selection_sample") or 1500)
+    sub_s, yy_s = _subsample(sub, yy, max_sel, int(cfg.get("random_state") or 42))
+
+    top_k = min(int(cfg.get("stage4_top_k") or 12), len(cols))
 
     spearman = {}
     for c in cols:
-        v = sub[c].corr(yy, method="spearman")
+        v = sub_s[c].corr(yy_s, method="spearman")
         spearman[c] = abs(float(v)) if pd.notna(v) else 0.0
 
     try:
-        mi = mutual_info_regression(sub.values, yy.values, random_state=int(cfg.get("random_state") or 42))
+        mi = mutual_info_regression(
+            np.asarray(sub_s.values, dtype=float).copy(),
+            np.asarray(yy_s.values, dtype=float).copy(),
+            random_state=int(cfg.get("random_state") or 42),
+        )
         mi_map = {cols[i]: float(mi[i]) for i in range(len(cols))}
     except Exception:
         mi_map = {c: 0.0 for c in cols}
 
     try:
-        fvals, _ = f_regression(sub.values, yy.values)
+        fvals, _ = f_regression(
+            np.asarray(sub_s.values, dtype=float).copy(),
+            np.asarray(yy_s.values, dtype=float).copy(),
+        )
         f_map = {cols[i]: float(fvals[i]) if np.isfinite(fvals[i]) else 0.0 for i in range(len(cols))}
     except Exception:
         f_map = {c: 0.0 for c in cols}
@@ -134,11 +162,18 @@ def stage5_embedded(X: pd.DataFrame, y: pd.Series, cols: List[str], cfg: Dict[st
         return cols
     sub = sub.loc[mask].fillna(0.0)
     yy = yy.loc[mask]
+
+    # Subsample for fast fitting.
+    max_sel = int(cfg.get("max_selection_sample") or 1500)
+    sub_s, yy_s = _subsample(sub, yy, max_sel, int(cfg.get("random_state") or 42))
+    xs = np.asarray(sub_s.values, dtype=float).copy()
+    ys = np.asarray(yy_s.values, dtype=float).copy()
+
     votes: Dict[str, int] = {c: 0 for c in cols}
 
     try:
-        enet = ElasticNetCV(cv=3, random_state=int(cfg.get("random_state") or 42), max_iter=2000)
-        enet.fit(sub.values, yy.values)
+        enet = ElasticNetCV(cv=3, random_state=int(cfg.get("random_state") or 42), max_iter=1000)
+        enet.fit(xs, ys)
         for i, c in enumerate(cols):
             if abs(float(enet.coef_[i])) > 1e-8:
                 votes[c] += 1
@@ -146,15 +181,15 @@ def stage5_embedded(X: pd.DataFrame, y: pd.Series, cols: List[str], cfg: Dict[st
         pass
 
     try:
-        ridge = RidgeCV(alphas=np.logspace(-3, 2, 12))
-        ridge.fit(sub.values, yy.values)
+        ridge = RidgeCV(alphas=np.logspace(-3, 2, 8))
+        ridge.fit(xs, ys)
         for i, c in enumerate(cols):
             if abs(float(ridge.coef_[i])) > 1e-8:
                 votes[c] += 1
     except Exception:
         pass
 
-    if cfg.get("stage5_use_rfe", True) and len(cols) > 3:
+    if cfg.get("stage5_use_rfe", False) and len(cols) > 3:
         try:
             from sklearn.feature_selection import RFE
             from sklearn.linear_model import Ridge
@@ -162,21 +197,21 @@ def stage5_embedded(X: pd.DataFrame, y: pd.Series, cols: List[str], cfg: Dict[st
             est = Ridge(alpha=1.0)
             n_keep = max(3, len(cols) // 2)
             rfe = RFE(est, n_features_to_select=n_keep)
-            rfe.fit(sub.values, yy.values)
+            rfe.fit(xs, ys)
             for i, c in enumerate(cols):
                 if rfe.support_[i]:
                     votes[c] += 1
         except Exception:
             pass
 
-    min_votes = int(cfg.get("stage5_min_votes") or 2)
+    min_votes = int(cfg.get("stage5_min_votes") or 1)
     picked = [c for c, v in votes.items() if v >= min_votes]
     return picked or cols[: max(3, len(cols) // 2)]
 
 
 def stage6_stability(X: pd.DataFrame, y: pd.Series, cols: List[str], cfg: Dict[str, Any]) -> List[str]:
-    n_boot = int(cfg.get("stage6_bootstrap_n") or 12)
-    thr = float(cfg.get("stage6_stability_threshold") or 0.70)
+    n_boot = int(cfg.get("stage6_bootstrap_n") or 5)
+    thr = float(cfg.get("stage6_stability_threshold") or 0.60)
     counts: Dict[str, int] = {c: 0 for c in cols}
     yy = pd.to_numeric(y, errors="coerce")
     sub_all = X[cols].copy()
@@ -185,6 +220,11 @@ def stage6_stability(X: pd.DataFrame, y: pd.Series, cols: List[str], cfg: Dict[s
         return cols
     sub_all = sub_all.loc[mask].fillna(0.0)
     yy = yy.loc[mask]
+
+    # Cap bootstrap data size for speed.
+    max_sel = int(cfg.get("max_selection_sample") or 1500)
+    sub_all, yy = _subsample(sub_all, yy, max_sel, int(cfg.get("random_state") or 42))
+
     rng = np.random.default_rng(int(cfg.get("random_state") or 42))
     n = len(sub_all)
     for _ in range(n_boot):
@@ -192,8 +232,10 @@ def stage6_stability(X: pd.DataFrame, y: pd.Series, cols: List[str], cfg: Dict[s
         sub = sub_all.iloc[idx]
         yb = yy.iloc[idx]
         try:
-            enet = ElasticNetCV(cv=3, random_state=42, max_iter=1500)
-            enet.fit(sub.values, yb.values)
+            enet = ElasticNetCV(cv=3, random_state=42, max_iter=800)
+            xs = np.asarray(sub.values, dtype=float).copy()
+            yv = np.asarray(yb.values, dtype=float).copy()
+            enet.fit(xs, yv)
             for i, c in enumerate(cols):
                 if abs(float(enet.coef_[i])) > 1e-8:
                     counts[c] += 1
@@ -217,6 +259,22 @@ def run_feature_stages(
     s4 = stage4_relevance(X1, y, s3, cfg)
     s5 = stage5_embedded(X1, y, s4, cfg)
     s6 = stage6_stability(X1, y, s5, cfg)
+
+    # Hard cap: never pass more than max_features to the model.
+    max_feat = int(cfg.get("max_features") or 10)
+    if len(s6) > max_feat:
+        # Keep the best by Spearman with target.
+        yy = pd.to_numeric(df[target_tag], errors="coerce")
+        mask = yy.notna()
+        yy_v = yy[mask]
+        ranked = sorted(
+            s6,
+            key=lambda c: abs(float(X1.loc[mask, c].corr(yy_v, method="spearman")) or 0)
+            if c in X1.columns else 0,
+            reverse=True,
+        )
+        s6 = ranked[:max_feat]
+
     trail = {
         "stage1_count": len(X1.columns),
         "stage2_count": len(s2),

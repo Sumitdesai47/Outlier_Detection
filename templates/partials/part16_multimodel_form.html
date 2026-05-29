@@ -1,19 +1,116 @@
-<div class="card-body pt-3">
+<div class="part16-workspace">
+  <div class="part16-hero">
+    <div class="part16-hero-text">
+      <p class="part16-eyebrow mb-1">Multimodel Outlier Detection</p>
+      <h2 class="part16-hero-title mb-2">Upload your plant data and run intelligent outlier analysis</h2>
+      <p class="part16-hero-lead mb-0">
+        Upload a time-series Excel file. The system trains a model per tag (linear or nonlinear),
+        uses the best fit for peer prediction (S5), and returns an executive results dashboard.
+      </p>
+    </div>
+  </div>
+
+  <ol class="part16-stepper" aria-label="Workflow steps">
+    <li class="part16-step part16-step--active">
+      <span class="part16-step-num">1</span>
+      <span class="part16-step-label">Prepare file</span>
+    </li>
+    <li class="part16-step">
+      <span class="part16-step-num">2</span>
+      <span class="part16-step-label">Upload &amp; configure</span>
+    </li>
+    <li class="part16-step">
+      <span class="part16-step-num">3</span>
+      <span class="part16-step-label">Review results</span>
+    </li>
+  </ol>
+
+  <div class="row g-3 mb-3 part16-resource-row">
+    <div class="col-md-6">
+      <a class="part16-resource-card" href="/part16/sample-template">
+        <span class="part16-resource-icon" aria-hidden="true">📊</span>
+        <span class="part16-resource-body">
+          <strong>Download sample Excel file</strong>
+          <span class="d-block text-muted small mt-1">See the exact column layout (Timestamp + numeric tags). Includes an Instructions sheet.</span>
+        </span>
+        <span class="part16-resource-cta">XLSX</span>
+      </a>
+    </div>
+    <div class="col-md-6">
+      <a class="part16-resource-card" href="/part16/user-guide">
+        <span class="part16-resource-icon" aria-hidden="true">📄</span>
+        <span class="part16-resource-body">
+          <strong>Download step-by-step guide</strong>
+          <span class="d-block text-muted small mt-1">Plain-language Word document: how to use the portal from upload to results.</span>
+        </span>
+        <span class="part16-resource-cta">DOCX</span>
+      </a>
+    </div>
+  </div>
+
+  <div class="part16-format-card mb-3">
+    <h3 class="part16-format-title">Required Excel format</h3>
+    <div class="row g-3 align-items-start">
+      <div class="col-lg-7">
+        <table class="table table-sm table-bordered mb-0 part16-format-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Your_Tag_1</th>
+              <th>Your_Tag_2</th>
+              <th>…</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>2026-01-01 00:00:00</td>
+              <td>12.4</td>
+              <td>88.1</td>
+              <td class="text-muted">numeric</td>
+            </tr>
+            <tr>
+              <td>2026-01-01 01:00:00</td>
+              <td>12.7</td>
+              <td>87.9</td>
+              <td class="text-muted">numeric</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="col-lg-5">
+        <ul class="part16-checklist mb-0">
+          <li>File type: <strong>.xlsx</strong> only</li>
+          <li>First column: <strong>Timestamp</strong></li>
+          <li>Other columns: <strong>numbers only</strong> (one tag per column)</li>
+          <li>One row per time point; avoid gaps</li>
+          <li>Long files are OK — processing may take a few minutes</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="part16-upload-panel">
+    <h3 class="part16-upload-heading">Upload &amp; configure tags</h3>
+    <p class="text-muted small mb-3">Select your workbook, then adjust the tag table. Click <strong>Process data</strong> when ready.</p>
           <form id="part16OutlierForm" action="{{ url_for('main.part16_multimodel_outlier_detection') }}" method="post" enctype="multipart/form-data">
             <input type="hidden" name="part16_tag_config" id="part16TagConfigFlag" value="">
             <input type="hidden" name="part16_advanced_json" id="part16AdvancedJson" value="">
             <div class="mb-3">
-              <label class="form-label-sm">Excel file (time-series, XLSX)</label>
-              <input class="form-control" id="part16FileInput" type="file" name="part16_multimodel_xlsx" accept=".xlsx" required>
+              <label class="form-label fw-semibold" for="part16FileInput">Excel file (time-series)</label>
+              <input class="form-control form-control-lg part16-file-input" id="part16FileInput" type="file" name="part16_multimodel_xlsx" accept=".xlsx" required>
               <div id="part16PreviewHint" class="text-muted small mt-2">Choose a file to load tag names from the first row of the sheet.</div>
             </div>
             <div id="part16AdvancedPanels" class="mt-3" style="display:none;">
-              <div id="part16UnifiedTable" class="table-responsive mb-3" style="max-height: 520px;"></div>
+              <p class="small text-muted mb-2"><strong>Tip:</strong> Check <em>Crit.</em> for tags you want in focused summaries. S5 uses a trained model on <em>every</em> tag.</p>
+              <div id="part16UnifiedTable" class="table-responsive mb-3 part16-tag-table-wrap"></div>
             </div>
-            <div id="part16ProcessSection" class="mt-3" style="display:none;">
-              <button class="btn btn-primary" id="part16SubmitBtn" type="submit" disabled>Process data</button>
+            <div id="part16ProcessSection" class="mt-3 pt-2 border-top" style="display:none;">
+              <button class="btn btn-primary btn-lg part16-submit-btn" id="part16SubmitBtn" type="submit" disabled>Process data</button>
+              <p class="text-muted small mt-2 mb-0">Analysis may take 1–2 minutes per tag on large datasets.</p>
             </div>
           </form>
+  </div>
+</div>
           <script>
             (function () {
               var DEFAULT_REF_Z = 3.75;
@@ -23,7 +120,7 @@
                 { id: "S2_LOCAL", label: "Local Rolling Z (31 Days)", info: "Rolling median/MAD around each point so slow drift does not drown local spikes." },
                 { id: "S3_TUKEY", label: "Tukey Outer Fence", info: "Distance to Tukey-style outer fences on a trimmed inner distribution (IQR-based)." },
                 { id: "S4_DIFF", label: "First-Difference Z", info: "Robust z on first differences—flags sharp steps even when the level looks normal." },
-                { id: "S5_PEER", label: "Peer Residual Z", info: "Residual vs correlated peer tags—excursion not explained by peers' joint behavior." },
+                { id: "S5_PEER", label: "Peer Residual Z", info: "Multimodel prediction residual — best CV model per tag replaces simple peer ridge." },
                 { id: "S6_LONG", label: "Long Window Z (trailing regime)", info: "Each point vs a trailing long-window median/MAD for slow regime or baseline shifts." },
                 { id: "S7_TREND", label: "Trend-gap Z (short vs long median)", info: "Gap between short and long rolling medians to catch ramps and trend breaks." },
                 { id: "S8_EARLY", label: "Early Segment Z", info: "Early portion of the series vs a later baseline to highlight startup or initial anomalies." }
@@ -45,6 +142,13 @@
               var form = document.getElementById("part16OutlierForm");
               var submitBtn = document.getElementById("part16SubmitBtn");
               var processSection = document.getElementById("part16ProcessSection");
+              function setStep(n) {
+                document.querySelectorAll(".part16-step").forEach(function (el, i) {
+                  el.classList.toggle("part16-step--active", i + 1 === n);
+                  el.classList.toggle("part16-step--done", i + 1 < n);
+                });
+              }
+              setStep(1);
               function resetAfterFileChange() {
                 if (flagEl) flagEl.value = "";
                 if (advJsonEl) advJsonEl.value = "";
@@ -52,6 +156,7 @@
                 if (processSection) processSection.style.display = "none";
                 if (tableHost) tableHost.innerHTML = "";
                 if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Process data"; }
+                setStep(1);
               }
               function syncTier2ForRow(tr) {
                 var cb = tr.querySelector("input.part16-crit");
@@ -269,7 +374,8 @@
                     if (panels) panels.style.display = "block";
                     if (processSection) processSection.style.display = "block";
                     if (submitBtn) submitBtn.disabled = false;
-                    if (hint) hint.textContent = "Loaded " + data.tags.length + " tag(s). Configure the table, then click Process data.";
+                    if (hint) hint.innerHTML = "Loaded <strong>" + data.tags.length + "</strong> tag(s). Review the table below, then click <strong>Process data</strong>.";
+                    setStep(2);
                   })
                   .catch(function () { if (hint) hint.textContent = "Network error loading tags."; resetAfterFileChange(); });
               }
@@ -308,9 +414,9 @@
                 }
                 var payload = serializePart16();
                 if (advJsonEl) advJsonEl.value = JSON.stringify(payload);
+                setStep(3);
                 showLoaderOverlay();
                 if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Processing full dataset…"; }
               });
             })();
           </script>
-        </div>

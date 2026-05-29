@@ -453,7 +453,7 @@
         });
       }
 
-      if (xVarsBody) {
+      if (xVarsBody && !window.__multimodelTab) {
         const xs = xVarsByTag[tag] || [];
         xVarsBody.innerHTML = "";
         if (!xs.length) {
@@ -501,7 +501,12 @@
 
     function consensusOnPrimaryTagChange(tag) {
       showPart4Tag(tag);
-      if (window.__part4EnterpriseMode) consensusRenderInsights(tag);
+    }
+
+    function consensusEventReason(r) {
+      if (r.Event_Reason) return String(r.Event_Reason);
+      if (r.S5_Peer_Fired) return "Process issue/VC";
+      return "Tag issue/Outlier";
     }
 
     var CONSENSUS_TAG_PAGE_SIZE = 10;
@@ -896,6 +901,84 @@
       panel.innerHTML = html;
     }
 
+    var CONSENSUS_MODEL_SUMMARY_PAGE_SIZE = 20;
+    var __consensusModelSummaryPage = 1;
+    var __consensusFilteredModelSummary = [];
+    var __consensusModelSummarySelectedTag = null;
+
+    function consensusModelSummaryStatusBadge(status, cls) {
+      const label = status === "OK" ? "OK" : (status || "—");
+      const c = status === "OK" ? "healthy" : (cls || "healthy");
+      return '<span class="consensus-status consensus-status--' + c + '">' + label + "</span>";
+    }
+
+    function consensusGetModelSummaryRows() {
+      const q = String((document.getElementById("consensusModelSummarySearch") || {}).value || "").trim().toLowerCase();
+      const all = window.__modelSummaryByTag || [];
+      if (!q) return all.slice();
+      return all.filter(function (r) {
+        return String(r.tag || "").toLowerCase().indexOf(q) >= 0
+          || String(r.winner_model || "").toLowerCase().indexOf(q) >= 0
+          || String(r.model_features || "").toLowerCase().indexOf(q) >= 0;
+      });
+    }
+
+    function consensusOpenModelDetail(tag) {
+      __consensusModelSummarySelectedTag = tag;
+      const sel = document.getElementById("consensusModelTag");
+      if (sel) sel.value = tag;
+      consensusRenderModelsTab(tag);
+      consensusShowTab("models");
+    }
+
+    function consensusRenderModelSummaryTable() {
+      const body = document.getElementById("consensusModelSummaryBody");
+      if (!body) return;
+      __consensusFilteredModelSummary = consensusGetModelSummaryRows();
+      const totalPages = Math.max(1, Math.ceil(__consensusFilteredModelSummary.length / CONSENSUS_MODEL_SUMMARY_PAGE_SIZE));
+      if (__consensusModelSummaryPage > totalPages) __consensusModelSummaryPage = 1;
+      const start = (__consensusModelSummaryPage - 1) * CONSENSUS_MODEL_SUMMARY_PAGE_SIZE;
+      const slice = __consensusFilteredModelSummary.slice(start, start + CONSENSUS_MODEL_SUMMARY_PAGE_SIZE);
+      body.innerHTML = "";
+      if (!slice.length) {
+        body.innerHTML = '<tr><td colspan="7" class="text-muted">No model summary for this run.</td></tr>';
+        consensusRenderPaginationBar("consensusModelSummaryPagination", 1, 1, function () {});
+        return;
+      }
+      slice.forEach(function (r) {
+        const tr = document.createElement("tr");
+        tr.className = "consensus-model-summary-row";
+        if (__consensusModelSummarySelectedTag === r.tag) {
+          tr.classList.add("consensus-model-summary-row--selected");
+        }
+        const esc = function (s) {
+          return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+        };
+        tr.innerHTML =
+          "<td><code class=\"small\">" + esc(r.tag) + "</code></td>" +
+          "<td>" + consensusModelSummaryStatusBadge(r.status, r.status_class) + "</td>" +
+          "<td>" + esc(r.model_type) + "</td>" +
+          "<td>" + esc(r.winner_model) + "</td>" +
+          "<td class=\"text-center\">" + esc(r.features_kept != null ? r.features_kept : "—") + "</td>" +
+          "<td class=\"small consensus-model-features-cell\" title=\"" + esc(r.model_features) + "\">" + esc(r.model_features || "—") + "</td>" +
+          "<td class=\"text-end\">" + esc(r.flagged_points != null ? r.flagged_points : 0) + "</td>";
+        tr.addEventListener("click", function () {
+          consensusOpenModelDetail(r.tag);
+          consensusRenderModelSummaryTable();
+        });
+        body.appendChild(tr);
+      });
+      consensusRenderPaginationBar("consensusModelSummaryPagination", __consensusModelSummaryPage, totalPages, function (p) {
+        __consensusModelSummaryPage = p;
+        consensusRenderModelSummaryTable();
+      });
+    }
+
+    function consensusFilterModelSummaryTable() {
+      __consensusModelSummaryPage = 1;
+      consensusRenderModelSummaryTable();
+    }
+
     function consensusInitModelsTab() {
       const sel = document.getElementById("consensusModelTag");
       const metaMap = window.__multimodelMetaByTag || {};
@@ -931,8 +1014,9 @@
         showPart4Tag(sel.value);
       }
       consensusRenderTagTable();
-      consensusInitInsightSelect();
-      if (window.__multimodelTab) consensusInitModelsTab();
+      if (window.__multimodelTab) {
+        consensusInitModelsTab();
+      }
       consensusShowTab("overview");
     }
 
@@ -1025,6 +1109,7 @@
           window.__consensusInsightsByTag = cfg4.insightsByTag || {};
           window.__part4AllTags = cfg4.allTags || [];
           window.__multimodelMetaByTag = cfg4.multimodelMetaByTag || {};
+          window.__modelSummaryByTag = cfg4.modelSummaryByTag || [];
           window.__multimodelTab = !!cfg4.multimodelTab;
           if (window.__part4EnterpriseMode) {
             consensusInitEnterprise();
@@ -1050,31 +1135,7 @@
     <aside class="sidebar">
       <div class="sidebar-title">Process Intelligence</div>
       <nav class="sidebar-nav">
-        <a class="sidebar-link {% if request.endpoint == 'main.overview_dashboard' %}active{% endif %}" href="{{ url_for('main.overview_dashboard') }}">Dashboard</a>
-        {% if database_enabled %}
-        <a class="sidebar-link d-none {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
-        <a class="sidebar-link {% if request.endpoint in ('main.live_outlier_results', 'main.live_outlier_result_detail') %}active{% endif %}" href="{{ url_for('main.live_outlier_results') }}">Live Outlier detection</a>
-        <a class="sidebar-link {% if request.endpoint == 'main.rolling_outlier_results' %}active{% endif %}" href="{{ url_for('main.rolling_outlier_results') }}">Rolling Outlier Detection</a>
-        {% endif %}
-        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
-        <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
-        <a class="sidebar-link d-none {% if active_tab == 'part4' %}active{% endif %}" href="{{ url_for('main.index', tab='part4') }}">Auto (No Causal)</a>
-        <a class="sidebar-link d-none {% if active_tab == 'part5' %}active{% endif %}" href="{{ url_for('main.index', tab='part5') }}">Auto (No Clean Data)</a>
-        <a class="sidebar-link d-none {% if active_tab == 'part6' %}active{% endif %}" href="{{ url_for('main.index', tab='part6') }}">Auto Identification</a>
-        <a class="sidebar-link d-none {% if active_tab == 'part7' %}active{% endif %}" href="{{ url_for('main.index', tab='part7') }}">Testing (V4)</a>
-        <a class="sidebar-link d-none {% if active_tab == 'part8' %}active{% endif %}" href="{{ url_for('main.index', tab='part8') }}">Outlier detection</a>
-        <a class="sidebar-link d-none {% if active_tab == 'part11' %}active{% endif %}" href="{{ url_for('main.index', tab='part11') }}">Outlier detection combine</a>
-        <a class="sidebar-link d-none {% if active_tab == 'part9' %}active{% endif %}" href="{{ url_for('main.index', tab='part9') }}">Outlier detection (using data model)</a>
-        <a class="sidebar-link d-none {% if active_tab == 'part12' %}active{% endif %}" href="{{ url_for('main.index', tab='part12') }}">Outlier detection (updated logic)</a>
-        <a class="sidebar-link d-none {% if active_tab == 'part13' %}active{% endif %}" href="{{ url_for('main.index', tab='part13') }}">Outlier detection (robust consensus)</a>
-        <a class="sidebar-link {% if active_tab == 'part14' %}active{% endif %}" href="{{ url_for('main.index', tab='part14') }}">Multi-signal consensus outlier</a>
-        <a class="sidebar-link {% if active_tab == 'part15' %}active{% endif %}" href="{{ url_for('main.index', tab='part15') }}">Dev (Outlier detection)</a>
-        <a class="sidebar-link d-none {% if active_tab == 'part10' %}active{% endif %}" href="{{ url_for('main.index', tab='part10') }}">Testing (V7)</a>
-        {% if database_enabled %}
-        <a class="sidebar-link d-none {% if request.endpoint in ('main.data_browse', 'main.data_timeseries_detail', 'main.data_causal_detail') %}active{% endif %}" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
-        <a class="sidebar-link d-none {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
-        <a class="sidebar-link d-none {% if request.endpoint == 'main.outlier_excel_upload_page' %}active{% endif %}" href="{{ url_for('main.outlier_excel_upload_page') }}">Live outlier data upload</a>
-        {% endif %}
+        {% include 'partials/sidebar_nav.html' %}
       </nav>
       <div class="sidebar-help text-muted">
         Results for the latest run.
@@ -1304,10 +1365,11 @@
           "detailTableStrongAnomalyOnly": active_tab == 'part15',
           "enterpriseMode": true,
           "multimodelTab": active_tab == 'part16',
-          "tagAnalysis": part4.tag_analysis,
-          "insightsByTag": part4.insights_by_tag,
-          "allTags": part4.all_plot_tags,
-          "multimodelMetaByTag": part4.multimodel_meta_by_tag
+          "tagAnalysis": (part4.tag_analysis if part4.tag_analysis is defined else []),
+          "insightsByTag": (part4.insights_by_tag if part4.insights_by_tag is defined else {}),
+          "allTags": (part4.all_plot_tags if part4.all_plot_tags is defined else []),
+          "multimodelMetaByTag": (part4.multimodel_meta_by_tag if part4.multimodel_meta_by_tag is defined else {}),
+          "modelSummaryByTag": (part4.model_summary_by_tag if part4.model_summary_by_tag is defined else [])
         }|tojson }}</script>
         {% else %}
         {% if active_tab == 'part8' %}

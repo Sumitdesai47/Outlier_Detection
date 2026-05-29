@@ -198,15 +198,20 @@ def select_model_type(X: pd.DataFrame, y: pd.Series, cfg: Dict[str, Any]) -> Tup
 
 def _train_candidates(model_type: str, cfg: Dict[str, Any]) -> List[Tuple[str, Any]]:
     rs = int(cfg.get("random_state") or 42)
+    folds = max(2, int(cfg.get("cv_folds") or 3))
     if model_type == "linear":
         return [
-            ("ElasticNetCV", ElasticNetCV(cv=3, random_state=rs, max_iter=3000)),
-            ("RidgeCV", RidgeCV(alphas=np.logspace(-3, 3, 15))),
-            ("LassoCV", LassoCV(cv=3, random_state=rs, max_iter=3000)),
+            ("ElasticNetCV", ElasticNetCV(cv=folds, random_state=rs, max_iter=1000)),
+            ("RidgeCV", RidgeCV(alphas=np.logspace(-3, 3, 10))),
+            ("LassoCV", LassoCV(cv=folds, random_state=rs, max_iter=1000)),
         ]
     return [
-        ("GradientBoosting", GradientBoostingRegressor(random_state=rs, max_depth=4, n_estimators=120)),
-        ("RandomForest", RandomForestRegressor(random_state=rs, n_estimators=120, max_depth=8, n_jobs=-1)),
+        ("GradientBoosting", GradientBoostingRegressor(
+            random_state=rs, max_depth=3, n_estimators=60, subsample=0.85,
+        )),
+        ("RandomForest", RandomForestRegressor(
+            random_state=rs, n_estimators=60, max_depth=6, n_jobs=-1,
+        )),
         ("SVR_RBF", SVR(kernel="rbf", C=1.0, epsilon=0.1)),
     ]
 
@@ -229,9 +234,18 @@ def train_winner(
 
     sub = X.loc[mask, feats].fillna(0.0)
     yy = yy.loc[mask]
+
+    # Subsample large datasets for model training (keeps wall-time bounded).
+    max_train = int(cfg.get("max_train_sample") or 2000)
+    if len(sub) > max_train:
+        rng = np.random.default_rng(int(cfg.get("random_state") or 42))
+        idx = np.sort(rng.choice(len(sub), size=max_train, replace=False))
+        sub = sub.iloc[idx]
+        yy = yy.iloc[idx]
+
     ys = np.asarray(yy.values, dtype=float).copy()
     model_type, selection_reason = select_model_type(sub, yy, cfg)
-    folds = int(cfg.get("cv_folds") or 5)
+    folds = max(2, int(cfg.get("cv_folds") or 3))
     seed = int(cfg.get("random_state") or 42)
 
     scaler = StandardScaler()

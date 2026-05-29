@@ -213,7 +213,7 @@ th {{ background: #f8fafc; }}
 <h1>Multi-Signal Consensus — Results Report</h1>
 <div class="kpi">
   <div class="card"><div>Tags Analyzed</div><div class="v">{executive['total_tags_analyzed']}</div></div>
-  <div class="card"><div>Strong Anomalies</div><div class="v">{executive['total_outliers']}</div></div>
+  <div class="card"><div>Strong Anomalies</div><div class="v">{executive['total_strong_outliers']}</div></div>
   <div class="card"><div>Analysis Period</div><div class="v">{executive['analysis_period']}</div></div>
   <div class="card"><div>Data Quality</div><div class="v">{executive['data_quality_score']}%</div></div>
   <div class="card"><div>Health</div><div class="v">{executive['health_status']}</div></div>

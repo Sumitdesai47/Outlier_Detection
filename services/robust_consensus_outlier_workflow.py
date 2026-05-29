@@ -1385,6 +1385,12 @@ def run_robust_consensus_outlier_ui(
                         r.get("Direction"),
                         r.get("Limit_Crossed"),
                     ),
+                    "Event_Reason": (
+                        "Process issue/VC"
+                        if bool(r.get("Fire_S5_PEER") or r.get("S5_Peer_Fired"))
+                        else "Tag issue/Outlier"
+                    ),
+                    "S5_Peer_Fired": bool(r.get("Fire_S5_PEER") or r.get("S5_Peer_Fired")),
                     "Anomaly_explanation": _build_anomaly_explanation_for_details(
                         r, eng_active=eng_active, cfg=cfg
                     ),
@@ -1413,6 +1419,14 @@ def run_robust_consensus_outlier_ui(
                                 "Final_Class": r.get("Final_Class_Display"),
                                 "Direction": str(r.get("Direction") or "Unknown"),
                                 "Reason": str(r.get("Reason") or ""),
+                                "Event_Reason": (
+                                    "Process issue/VC"
+                                    if bool(r.get("Fire_S5_PEER") or r.get("S5_Peer_Fired"))
+                                    else "Tag issue/Outlier"
+                                ),
+                                "S5_Peer_Fired": bool(
+                                    r.get("Fire_S5_PEER") or r.get("S5_Peer_Fired")
+                                ),
                                 "Anomaly_explanation": _build_anomaly_explanation_for_details(
                                     r,
                                     eng_active=_resolve_engine_set(

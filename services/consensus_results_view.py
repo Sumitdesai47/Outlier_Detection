@@ -61,6 +61,7 @@ def build_executive_summary(
     drift_map = drift_points_by_tag or {}
     total_drift_events = sum(int(drift_map.get(str(t)) or 0) for t in all_plot_tags)
     total_outliers = _count_flagged_events(details_by_tag)
+    total_strong_outliers = _count_strong_anomaly_events(details_by_tag)
     warnings = int(summary.get("Warning_Rows") or 0)
     total_checks = int(summary.get("Total_Tag_Timestamp_Checks") or 0)
     normal_rows = int(summary.get("Normal_Rows") or 0)
@@ -81,6 +82,7 @@ def build_executive_summary(
         "total_tags_analyzed": total_tags,
         "total_drift_events": total_drift_events,
         "total_outliers": total_outliers,
+        "total_strong_outliers": total_strong_outliers,
         "total_warnings": warnings,
         "analysis_period": _period_label(df_for_script),
         "data_quality_score": data_quality,
@@ -141,6 +143,85 @@ def build_tag_analysis_rows(
             _STATUS_ORDER.get(str(r.get("status")), 99),
             -int(r.get("anomaly_count") or 0),
             str(r.get("tag")),
+        )
+    )
+    return rows
+
+
+def _display_model_feature_name(target_tag: str, feature: str) -> str:
+    tag = str(target_tag).strip()
+    f = str(feature).strip()
+    if f.startswith(f"{tag}__"):
+        return f
+    if f.startswith("peer_delta__"):
+        return f"{tag}__{f}"
+    return f"{tag}__{f}"
+
+
+def _count_flagged_points_for_tag(details_by_tag: Dict[str, List[Dict[str, Any]]], tag: str) -> int:
+    rows = details_by_tag.get(tag) or []
+    return sum(
+        1
+        for r in rows
+        if str(r.get("Final_Class") or "").strip()
+        not in ("", "Normal", "Spike - Returned Normal")
+    )
+
+
+def build_model_summary_by_tag(
+    all_plot_tags: Sequence[str],
+    multimodel_meta_by_tag: Dict[str, Dict[str, Any]],
+    details_by_tag: Dict[str, List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Per-tag S5 model summary for the Model Details tab (part16 multimodel runs)."""
+    rows: List[Dict[str, Any]] = []
+    for tag in all_plot_tags:
+        tag = str(tag)
+        mm = multimodel_meta_by_tag.get(tag) or {}
+        flagged = _count_flagged_points_for_tag(details_by_tag, tag)
+
+        if mm.get("error"):
+            status = "Error"
+            status_class = "warning"
+        elif mm.get("winner_model"):
+            status = "OK"
+            status_class = "healthy"
+        else:
+            status = "—"
+            status_class = "healthy"
+
+        features_final = list(mm.get("features_final") or [])
+        n_feat = int(mm.get("n_features_in_model") or len(features_final) or 0)
+
+        feat_labels: List[str] = []
+        fs = mm.get("feature_selection") or []
+        in_model = [r for r in fs if r.get("in_model")]
+        if in_model:
+            feat_labels = [str(r.get("feature") or "") for r in in_model if r.get("feature")]
+        elif features_final:
+            feat_labels = [_display_model_feature_name(tag, f) for f in features_final]
+
+        rows.append(
+            {
+                "tag": tag,
+                "status": status,
+                "status_class": status_class,
+                "model_type": str(mm.get("model_type") or "—"),
+                "winner_model": str(mm.get("winner_model") or "—"),
+                "features_kept": n_feat,
+                "model_features": ", ".join(feat_labels),
+                "flagged_points": flagged,
+                "error": mm.get("error"),
+                "winner_cv_rmse": mm.get("winner_cv_rmse"),
+                "winner_cv_r2": mm.get("winner_cv_r2"),
+            }
+        )
+
+    rows.sort(
+        key=lambda r: (
+            0 if r.get("status") == "OK" else 1,
+            -int(r.get("flagged_points") or 0),
+            str(r.get("tag") or ""),
         )
     )
     return rows

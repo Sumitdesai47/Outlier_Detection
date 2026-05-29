@@ -66,6 +66,7 @@ from services.consensus_results_export import (
 )
 from services.consensus_results_view import (
     build_executive_summary,
+    build_model_summary_by_tag,
     build_tag_analysis_rows,
     build_tag_insights,
 )
@@ -141,6 +142,15 @@ def _build_part4_consensus_context(result: dict, result_id: str, df_for_script) 
         str(tag): build_tag_insights(str(tag), details_by_tag, x_variables_by_tag)
         for tag in all_plot_tags
     }
+    multimodel_meta_by_tag = result.get("multimodel_meta_by_tag") or {}
+    try:
+        model_summary_by_tag = build_model_summary_by_tag(
+            all_plot_tags,
+            multimodel_meta_by_tag,
+            details_by_tag,
+        )
+    except Exception:
+        model_summary_by_tag = []
     return {
         "result_id": result_id,
         "summary": summary,
@@ -156,13 +166,16 @@ def _build_part4_consensus_context(result: dict, result_id: str, df_for_script) 
         "executive": executive,
         "tag_analysis": tag_analysis,
         "insights_by_tag": insights_by_tag,
-        "multimodel_meta_by_tag": result.get("multimodel_meta_by_tag") or {},
+        "multimodel_meta_by_tag": multimodel_meta_by_tag,
+        "model_summary_by_tag": model_summary_by_tag,
     }
 
 
 # If this path points to an existing XLSX, the app treats a causal matrix as "available"
-# and opens the Anomaly detection tab by default (unless ?tab= or last workflow overrides).
+# and opens the public home tab by default (unless ?tab= overrides).
 _CAUSAL_ENV = "CAUSAL_MATRIX_PATH"
+_PUBLIC_UI_TAB = "part16"
+_UI_HIDDEN_TABS = frozenset({"part14", "part15"})
 
 
 def _causal_matrix_file_configured() -> bool:
@@ -172,18 +185,18 @@ def _causal_matrix_file_configured() -> bool:
 
 def _resolve_home_tab() -> str:
     q = (request.args.get("tab") or "").strip().lower()
-    if q in {"part2", "part3", "part4", "part5", "part6", "part7", "part8", "part9", "part10", "part11", "part12", "part13", "part14", "part15", "part16"}:
+    if q in _UI_HIDDEN_TABS:
+        return _PUBLIC_UI_TAB
+    if q in {
+        "part2", "part3", "part4", "part5", "part6", "part7", "part8", "part9",
+        "part10", "part11", "part12", "part13", "part16",
+    }:
         return q
     if q == "db":
-        return "part14"
+        return _PUBLIC_UI_TAB
     if _causal_matrix_file_configured():
-        return "part14"
-    last = session.get("last_workflow")
-    if last == "anomaly":
-        return "part14"
-    if last == "outlier":
-        return "part14"
-    return "part14"
+        return _PUBLIC_UI_TAB
+    return _PUBLIC_UI_TAB
 
 
 def _has_causal_matrix_context() -> bool:
@@ -384,6 +397,32 @@ def part15_readme_download():
         path,
         as_attachment=True,
         download_name="DEV_OUTLIER_README.docx",
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+
+@bp.route("/part16/sample-template")
+def part16_sample_template():
+    path = os.path.join(PROJECT_ROOT, "docs", "multimodel_outlier_sample_template.xlsx")
+    if not os.path.isfile(path):
+        abort(404, description="Sample template file not found.")
+    return send_file(
+        path,
+        as_attachment=True,
+        download_name="multimodel_outlier_sample_template.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@bp.route("/part16/user-guide")
+def part16_user_guide():
+    path = os.path.join(PROJECT_ROOT, "docs", "Multimodel_Outlier_User_Guide.docx")
+    if not os.path.isfile(path):
+        abort(404, description="User guide file not found.")
+    return send_file(
+        path,
+        as_attachment=True,
+        download_name="Multimodel_Outlier_User_Guide.docx",
         mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 

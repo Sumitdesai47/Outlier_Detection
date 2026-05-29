@@ -1,6 +1,8 @@
 """Build multimodel S5 predictions per tag for consensus workflow."""
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
@@ -97,36 +99,75 @@ def _features_to_x_variables(
     return rows
 
 
+def _safe_float(v: Any) -> Any:
+    """Convert numpy/inf/nan to a JSON-safe Python float or None."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except Exception:
+        return None
+    import math
+    if not math.isfinite(f):
+        return None
+    return round(f, 6)
+
+
+def _safe_candidates(cands: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ensure every candidate row has only JSON-safe values."""
+    out = []
+    for c in (cands or []):
+        out.append({
+            "model_name": str(c.get("model_name") or ""),
+            "model_family": str(c.get("model_family") or ""),
+            "cv_rmse": _safe_float(c.get("cv_rmse")),
+            "cv_r2": _safe_float(c.get("cv_r2")),
+            "status": str(c.get("status") or ""),
+            "is_winner": bool(c.get("is_winner")),
+        })
+    return out
+
+
 def multimodel_meta_for_ui(mm: Dict[str, Any]) -> Dict[str, Any]:
-    """JSON-serializable slice for results page (no pandas objects)."""
+    """JSON-serializable slice for results page (no pandas / numpy objects)."""
+    # Shared base keeps all keys present regardless of error path.
+    base: Dict[str, Any] = {
+        "error": None,
+        "model_type": None,
+        "winner_model": None,
+        "winner_cv_rmse": None,
+        "winner_cv_r2": None,
+        "selection_reason": None,
+        "model_candidates": [],
+        "feature_trail": {},
+        "features_final": [],
+        "feature_clusters": [],
+        "x_variables": [],
+        "feature_selection": [],
+        "n_features_in_model": 0,
+    }
     if mm.get("error"):
-        return {
+        base.update({
             "error": str(mm.get("error")),
-            "model_type": None,
-            "winner_model": None,
-            "winner_cv_rmse": None,
-            "selection_reason": mm.get("selection_reason") or "Model training failed.",
-            "model_candidates": [],
-            "feature_trail": {},
-            "features_final": [],
-            "feature_clusters": [],
-            "x_variables": [],
-            "feature_selection": [],
-        }
-    return {
+            "selection_reason": str(mm.get("selection_reason") or "Model training failed."),
+        })
+        return base
+    features_final = list(mm.get("features_final") or [])
+    base.update({
         "model_type": mm.get("model_type"),
         "winner_model": mm.get("model_name"),
-        "winner_cv_rmse": mm.get("cv_rmse"),
-        "winner_cv_r2": mm.get("cv_r2"),
+        "winner_cv_rmse": _safe_float(mm.get("cv_rmse")),
+        "winner_cv_r2": _safe_float(mm.get("cv_r2")),
         "selection_reason": mm.get("selection_reason"),
-        "model_candidates": mm.get("model_candidates") or [],
+        "model_candidates": _safe_candidates(mm.get("model_candidates") or []),
         "feature_trail": mm.get("feature_trail") or {},
-        "features_final": mm.get("features_final") or [],
+        "features_final": features_final,
         "feature_clusters": mm.get("feature_clusters") or [],
         "x_variables": mm.get("x_variables") or [],
         "feature_selection": mm.get("feature_selection") or [],
-        "n_features_in_model": len(mm.get("features_final") or []),
-    }
+        "n_features_in_model": len(features_final),
+    })
+    return base
 
 
 def build_s5_for_tag(
@@ -182,13 +223,48 @@ def build_s5_for_tag(
     }
 
 
+def _worker(
+    tag: str,
+    df: pd.DataFrame,
+    tag_cols: Sequence[str],
+    cfg: Dict[str, Any],
+) -> tuple[str, Dict[str, Any]]:
+    """Single-tag worker for ThreadPoolExecutor."""
+    try:
+        return tag, build_s5_for_tag(df, tag, tag_cols, cfg)
+    except Exception as exc:
+        return tag, {
+            "error": str(exc) or type(exc).__name__,
+            "model_name": None,
+            "model_type": None,
+            "cv_rmse": None,
+            "model_candidates": [],
+            "feature_trail": {},
+            "features_final": [],
+            "feature_clusters": [],
+            "selection_reason": "Training failed for this tag.",
+        }
+
+
+def _resolve_workers(cfg: Dict[str, Any]) -> int:
+    """Determine number of parallel threads: env → cfg → auto (half CPUs, min 2)."""
+    env = os.environ.get("MM_PARALLEL_WORKERS")
+    if env is not None and env.strip():
+        return max(1, int(env.strip()))
+    n = int(cfg.get("n_parallel_workers") or 0)
+    if n > 0:
+        return n
+    cpu = os.cpu_count() or 2
+    return max(2, cpu // 2)
+
+
 def build_multimodel_s5_by_tag(
     df: pd.DataFrame,
     tag_cols: Sequence[str],
     critical_tags: Optional[Sequence[str]],
     cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Dict[str, Any]]:
-    """Run multimodel pipeline per tag in ``critical_tags`` (target list), or all ``tag_cols`` when None."""
+    """Train multimodel S5 per tag in parallel (ThreadPoolExecutor)."""
     local = dict(DEFAULT_CFG)
     if cfg:
         local.update(cfg)
@@ -197,20 +273,25 @@ def build_multimodel_s5_by_tag(
     else:
         targets = [str(t) for t in tag_cols]
 
+    if not targets:
+        return {}
+
+    n_workers = min(_resolve_workers(local), len(targets))
     out: Dict[str, Dict[str, Any]] = {}
-    for tag in targets:
-        try:
-            out[tag] = build_s5_for_tag(df, tag, tag_cols, local)
-        except Exception as exc:
-            out[str(tag)] = {
-                "error": str(exc) or type(exc).__name__,
-                "model_name": None,
-                "model_type": None,
-                "cv_rmse": None,
-                "model_candidates": [],
-                "feature_trail": {},
-                "features_final": [],
-                "feature_clusters": [],
-                "selection_reason": "Training failed for this tag.",
+
+    if n_workers <= 1 or len(targets) == 1:
+        # Sequential fallback (avoids threading overhead for tiny workloads).
+        for tag in targets:
+            tag_out, result = _worker(tag, df, tag_cols, local)
+            out[tag_out] = result
+    else:
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            futures = {
+                pool.submit(_worker, tag, df, tag_cols, local): tag
+                for tag in targets
             }
+            for fut in as_completed(futures):
+                tag_out, result = fut.result()
+                out[tag_out] = result
+
     return out
