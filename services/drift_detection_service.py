@@ -31,6 +31,20 @@ def _short_label(name: str, max_len: int = 36) -> str:
     return s[: max_len - 1] + "…"
 
 
+def _minmax_unit_series(series: pd.Series) -> Tuple[pd.Series, pd.Series]:
+    """Per-series min–max scale to [0, 1]; returns (normalized, actual)."""
+    actual = pd.to_numeric(series, errors="coerce")
+    finite = actual[np.isfinite(actual.to_numpy(dtype=float, copy=False))]
+    if finite.size == 0:
+        return actual * np.nan, actual
+    lo, hi = float(np.min(finite)), float(np.max(finite))
+    if lo == hi:
+        norm = actual.copy()
+        norm.loc[actual.notna()] = 0.5
+        return norm, actual
+    return (actual - lo) / (hi - lo), actual
+
+
 def _padded_numeric_range(*series: pd.Series, pad_ratio: float = 0.06) -> Optional[Tuple[float, float]]:
     """Min/max across one or more numeric series with symmetric padding (skips NaN)."""
     chunks = []
@@ -70,45 +84,101 @@ def _build_full_tag_plot(
     *,
     drift_time: pd.Timestamp | None,
     compare_tags: Optional[Sequence[str]] = None,
+    normalize_compare: bool = False,
 ) -> go.Figure:
     """
     Primary tag + drift markers on the left y-axis.
-    Compare tags use a separate right y-axis so different engineering units scale correctly.
+    Compare tags use a separate right y-axis unless normalize_compare is True,
+    in which case all series are min–max scaled to [0, 1] on one axis (hover shows actual values).
     """
     ts = safe_parse_datetime_series(df_for_script["Timestamp"])
-    y_primary = pd.to_numeric(df_for_script[tag], errors="coerce")
+    y_primary_actual = pd.to_numeric(df_for_script[tag], errors="coerce")
 
     raw_compare = [str(c) for c in (compare_tags or []) if c and str(c) != str(tag)]
     valid_compare = [ct for ct in raw_compare if ct in df_for_script.columns]
+    use_normalized = bool(normalize_compare and valid_compare)
+
+    hover_line = "%{x|%m/%d/%Y}<br>%{fullData.name}<br>Actual: %{customdata:.4f}<extra></extra>"
+    hover_marker = "%{x|%m/%d/%Y}<br>%{fullData.name}<br>Actual: %{customdata:.4f}<extra></extra>"
+
+    primary_norm_lo: Optional[float] = None
+    primary_norm_hi: Optional[float] = None
+    if use_normalized:
+        finite_primary = y_primary_actual[np.isfinite(y_primary_actual.to_numpy(dtype=float, copy=False))]
+        if finite_primary.size:
+            primary_norm_lo = float(np.min(finite_primary))
+            primary_norm_hi = float(np.max(finite_primary))
+
+    def _norm_with_primary_bounds(values: pd.Series) -> pd.Series:
+        if primary_norm_lo is None or primary_norm_hi is None:
+            return values * np.nan
+        if primary_norm_lo == primary_norm_hi:
+            out = values.copy()
+            out.loc[values.notna()] = 0.5
+            return out
+        return (values - primary_norm_lo) / (primary_norm_hi - primary_norm_lo)
 
     fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=ts,
-            y=y_primary,
-            mode="lines",
-            name=_short_label(tag) + " (primary)",
-            line=dict(color="#b5171e", width=2.4),
-            connectgaps=False,
-            yaxis="y",
-        )
-    )
-
-    for i, ct in enumerate(valid_compare):
-        yc = pd.to_numeric(df_for_script[ct], errors="coerce")
-        color = _COMPARE_LINE_COLORS[i % len(_COMPARE_LINE_COLORS)]
+    if use_normalized:
+        y_primary, y_primary_actual = _minmax_unit_series(y_primary_actual)
         fig.add_trace(
             go.Scatter(
                 x=ts,
-                y=yc,
+                y=y_primary,
+                customdata=y_primary_actual,
                 mode="lines",
-                name=_short_label(ct),
-                line=dict(color=color, width=2, dash="solid"),
+                name=_short_label(tag) + " (primary)",
+                line=dict(color="#b5171e", width=2.4),
                 connectgaps=False,
-                opacity=0.92,
-                yaxis="y2",
+                hovertemplate=hover_line,
+                yaxis="y",
             )
         )
+    else:
+        fig.add_trace(
+            go.Scatter(
+                x=ts,
+                y=y_primary_actual,
+                mode="lines",
+                name=_short_label(tag) + " (primary)",
+                line=dict(color="#b5171e", width=2.4),
+                connectgaps=False,
+                yaxis="y",
+            )
+        )
+
+    for i, ct in enumerate(valid_compare):
+        yc_actual = pd.to_numeric(df_for_script[ct], errors="coerce")
+        color = _COMPARE_LINE_COLORS[i % len(_COMPARE_LINE_COLORS)]
+        if use_normalized:
+            yc, yc_actual = _minmax_unit_series(yc_actual)
+            fig.add_trace(
+                go.Scatter(
+                    x=ts,
+                    y=yc,
+                    customdata=yc_actual,
+                    mode="lines",
+                    name=_short_label(ct),
+                    line=dict(color=color, width=2, dash="solid"),
+                    connectgaps=False,
+                    opacity=0.92,
+                    hovertemplate=hover_line,
+                    yaxis="y",
+                )
+            )
+        else:
+            fig.add_trace(
+                go.Scatter(
+                    x=ts,
+                    y=yc_actual,
+                    mode="lines",
+                    name=_short_label(ct),
+                    line=dict(color=color, width=2, dash="solid"),
+                    connectgaps=False,
+                    opacity=0.92,
+                    yaxis="y2",
+                )
+            )
 
     sub = tag_result_rows.copy()
     sub["Timestamp"] = safe_parse_datetime_series(sub["Timestamp"])
@@ -119,32 +189,53 @@ def _build_full_tag_plot(
         if grp.empty:
             continue
         color = _STATUS_MARKER_COLORS.get(str(status), "#64748b")
-        fig.add_trace(
-            go.Scatter(
-                x=grp["Timestamp"],
-                y=grp["Value"],
-                mode="markers",
-                name=str(status),
-                marker=dict(size=8, color=color, line=dict(width=0)),
-                yaxis="y",
+        marker_actual = pd.to_numeric(grp["Value"], errors="coerce")
+        if use_normalized:
+            marker_y = _norm_with_primary_bounds(marker_actual)
+            fig.add_trace(
+                go.Scatter(
+                    x=grp["Timestamp"],
+                    y=marker_y,
+                    customdata=marker_actual,
+                    mode="markers",
+                    name=str(status),
+                    marker=dict(size=8, color=color, line=dict(width=0)),
+                    hovertemplate=hover_marker,
+                    yaxis="y",
+                )
             )
-        )
+        else:
+            fig.add_trace(
+                go.Scatter(
+                    x=grp["Timestamp"],
+                    y=grp["Value"],
+                    mode="markers",
+                    name=str(status),
+                    marker=dict(size=8, color=color, line=dict(width=0)),
+                    yaxis="y",
+                )
+            )
 
     if drift_time is not None and pd.notna(drift_time):
         fig.add_vline(x=drift_time, line_width=2, line_dash="dash", line_color="#b5171e", opacity=0.85)
 
-    # Ranges from actual finite data
-    primary_for_range = [y_primary]
-    for st, grp in sub.groupby("Status", dropna=False):
-        if st in ("normal", "missing") or pd.isna(st):
-            continue
-        g = grp.dropna(subset=["Value"])
-        if not g.empty:
-            primary_for_range.append(pd.to_numeric(g["Value"], errors="coerce"))
-    rng_y = _padded_numeric_range(*primary_for_range)
+    # Ranges from actual finite data (or fixed 0–1 when comparing normalized)
+    rng_y: Optional[Tuple[float, float]] = None
+    rng_y2: Optional[Tuple[float, float]] = None
+    if use_normalized:
+        rng_y = (-0.02, 1.02)
+    else:
+        primary_for_range = [y_primary_actual]
+        for st, grp in sub.groupby("Status", dropna=False):
+            if st in ("normal", "missing") or pd.isna(st):
+                continue
+            g = grp.dropna(subset=["Value"])
+            if not g.empty:
+                primary_for_range.append(pd.to_numeric(g["Value"], errors="coerce"))
+        rng_y = _padded_numeric_range(*primary_for_range)
 
-    compare_series = [pd.to_numeric(df_for_script[ct], errors="coerce") for ct in valid_compare]
-    rng_y2 = _padded_numeric_range(*compare_series) if compare_series else None
+        compare_series = [pd.to_numeric(df_for_script[ct], errors="coerce") for ct in valid_compare]
+        rng_y2 = _padded_numeric_range(*compare_series) if compare_series else None
 
     if len(sub):
         tr = _timestamp_range(ts, sub["Timestamp"])
@@ -159,6 +250,8 @@ def _build_full_tag_plot(
         title_sub += " · vs " + ", ".join(_short_label(c, 24) for c in valid_compare[:3])
         if len(valid_compare) > 3:
             title_sub += "…"
+    if use_normalized:
+        title_sub += " · normalized 0–1 (hover shows actual values)"
 
     layout_kwargs: dict = dict(
         title=dict(
@@ -199,7 +292,14 @@ def _build_full_tag_plot(
             automargin=True,
         ),
         yaxis=dict(
-            title=dict(text=_short_label(tag, 32) + " (left)", font=dict(size=12, color="#b5171e")),
+            title=dict(
+                text=(
+                    "Normalized (0–1)"
+                    if use_normalized
+                    else _short_label(tag, 32) + " (left)"
+                ),
+                font=dict(size=12, color="#b5171e"),
+            ),
             showgrid=True,
             gridcolor="#e2e8f0",
             zeroline=False,
@@ -211,7 +311,7 @@ def _build_full_tag_plot(
         ),
     )
 
-    if valid_compare:
+    if valid_compare and not use_normalized:
         layout_kwargs["yaxis2"] = dict(
             title=dict(
                 text="Compare tags (right scale)" if len(valid_compare) > 1 else _short_label(valid_compare[0], 28) + " (right)",
@@ -229,7 +329,7 @@ def _build_full_tag_plot(
 
     if rng_y is not None:
         layout_kwargs["yaxis"] = {**layout_kwargs["yaxis"], "range": list(rng_y)}
-    if valid_compare and rng_y2 is not None:
+    if valid_compare and not use_normalized and rng_y2 is not None:
         layout_kwargs["yaxis2"] = {**layout_kwargs["yaxis2"], "range": list(rng_y2)}
 
     fig.update_layout(**layout_kwargs)
@@ -246,6 +346,7 @@ def build_plot_figure_for_tag(
     tag: str,
     *,
     compare_tags: Optional[Sequence[str]] = None,
+    normalize_compare: bool = False,
 ) -> go.Figure:
     """Build the Part 3 Plotly figure for one primary tag (full series + markers) and optional compare lines."""
     tag = str(tag)
@@ -262,6 +363,7 @@ def build_plot_figure_for_tag(
         all_tag_rows,
         drift_time=drift_time if drift_time is not None and pd.notna(drift_time) else None,
         compare_tags=compare_tags,
+        normalize_compare=normalize_compare,
     )
 
 

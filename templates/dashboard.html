@@ -17,6 +17,7 @@
         {% if database_enabled %}
         <a class="sidebar-link d-none" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
         <a class="sidebar-link" href="{{ url_for('main.live_outlier_results') }}">Live Outlier detection</a>
+        <a class="sidebar-link {% if request.endpoint == 'main.rolling_outlier_results' %}active{% endif %}" href="{{ url_for('main.rolling_outlier_results') }}">Rolling Outlier Detection</a>
         {% endif %}
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>

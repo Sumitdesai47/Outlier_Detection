@@ -19,6 +19,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from services.robust_consensus_outlier_workflow import MULTI_SIGNAL_PRESET
+from services.rolling_outlier_detection_service import run_rolling_outlier_detection
+from services.rolling_outlier_sqlite import insert_results, list_runs, load_run_results
 from services.streamlit_dev_outlier_pipeline import (
     ENGINE_OPTIONS_ORDERED,
     apply_additional_filters,
@@ -59,6 +61,134 @@ def _numeric_tag_columns(df: pd.DataFrame) -> List[str]:
     return sorted(out)
 
 
+def _render_rolling_outlier_tab() -> None:
+    st.title("Rolling Outlier Detection")
+    st.markdown(
+        "Upload a dataset and run day-by-day/rolling outlier detection. "
+        "Rows 1-30 are baseline; processing starts from row 31."
+    )
+
+    up = st.file_uploader("Upload dataset (.xlsx)", type=["xlsx"], key="rolling_upload")
+    if up is None:
+        st.info("Upload a dataset to run rolling outlier detection.")
+    else:
+        df, err = load_uploaded_streamlit_file(up)
+        if err:
+            st.error(err)
+        else:
+            st.success(f"Loaded **{len(df):,}** rows × **{len(df.columns)}** columns.")
+            mode = st.selectbox(
+                "Baseline mode",
+                options=[("rolling", "Rolling previous 30 rows"), ("expanding", "All previous rows")],
+                format_func=lambda x: x[1],
+                key="rolling_mode",
+            )
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                window = st.number_input("Window size", min_value=30, max_value=500, value=30, step=1)
+            with c2:
+                st.caption("For rolling mode, previous N rows are used. Expanding mode uses all prior rows.")
+
+            if st.button("Run rolling outlier detection", type="primary"):
+                try:
+                    with st.spinner("Running rolling detection (Dev logic + SQLite persistence)..."):
+                        result = run_rolling_outlier_detection(
+                            df,
+                            dataset_name=getattr(up, "name", "uploaded_dataset.xlsx"),
+                            window_size=int(window),
+                            window_mode=mode[0],
+                        )
+                        saved = insert_results(result["records"])
+                    st.success(
+                        f"Run complete. Saved **{saved:,}** rows "
+                        f"({result['processed_timestamps']} timestamps × {result['tags_count']} tags)."
+                    )
+                except Exception as e:
+                    st.exception(e)
+
+    st.subheader("Saved rolling runs")
+    runs = list_runs()
+    if not runs:
+        st.info("No rolling runs found in SQLite yet.")
+        return
+
+    run_options = {f"{r['created_at']} | {r['dataset_name']} | {r['run_id'][:10]}": r["run_id"] for r in runs}
+    selected = st.selectbox("Select run", options=list(run_options.keys()))
+    run_id = run_options[selected]
+    rows = load_run_results(run_id)
+    if not rows:
+        st.warning("No rows found for selected run.")
+        return
+    rdf = pd.DataFrame(rows)
+    rdf["ts"] = pd.to_datetime(rdf["ts"], errors="coerce")
+
+    t1, t2, t3 = st.columns(3)
+    t1.metric("Total records", f"{len(rdf):,}")
+    t2.metric("Outliers", f"{int((rdf['status'] == 'Outlier').sum()):,}")
+    t3.metric("Tags", f"{rdf['tag_name'].nunique():,}")
+
+    tags = sorted(rdf["tag_name"].dropna().astype(str).unique().tolist())
+    tag = st.selectbox("Select tag", options=tags, key="rolling_tag")
+    sub = rdf[rdf["tag_name"].astype(str) == str(tag)].sort_values("ts")
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=sub["ts"],
+            y=sub["tag_value"],
+            mode="lines",
+            name="Tag Value",
+            line=dict(width=1.3),
+        )
+    )
+    out = sub[sub["status"] == "Outlier"]
+    if not out.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=out["ts"],
+                y=out["tag_value"],
+                mode="markers",
+                name="Outlier",
+                marker=dict(color="#d62728", size=8, symbol="circle"),
+                text=out["reason"],
+                hovertemplate="%{x}<br>Value=%{y}<br>%{text}<extra></extra>",
+            )
+        )
+    fig.update_layout(
+        title=f"{tag} — normal vs outlier behavior",
+        height=420,
+        margin=dict(l=40, r=20, t=45, b=40),
+        legend_orientation="h",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Processed results")
+    st.dataframe(
+        sub[
+            [
+                "ts",
+                "tag_name",
+                "tag_value",
+                "baseline_mean",
+                "baseline_std",
+                "z_score",
+                "lower_limit",
+                "upper_limit",
+                "status",
+                "reason",
+            ]
+        ],
+        use_container_width=True,
+        height=360,
+    )
+    st.download_button(
+        "Download processed results (CSV)",
+        data=sub.to_csv(index=False).encode("utf-8"),
+        file_name=f"rolling_outlier_{run_id}_{tag}.csv",
+        mime="text/csv",
+    )
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Dev Outlier Detection",
@@ -67,11 +197,15 @@ def main() -> None:
     )
     _init_session()
 
-    st.sidebar.title("Industrial AI — Dev Outlier")
-    st.sidebar.caption(
-        "This app exposes **Dev Outlier Detection** only. "
-        "Other outlier workflows are intentionally hidden here; use the Flask app if you need them."
+    st.sidebar.title("Industrial AI — Outlier Suite")
+    tab = st.sidebar.radio(
+        "Select module",
+        options=["Dev Outlier Detection", "Rolling Outlier Detection"],
+        index=0,
     )
+    if tab == "Rolling Outlier Detection":
+        _render_rolling_outlier_tab()
+        return
 
     st.title("Dev Outlier Detection")
     st.markdown(

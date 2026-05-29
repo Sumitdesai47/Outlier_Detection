@@ -1,0 +1,316 @@
+<div class="card-body pt-3">
+          <form id="part16OutlierForm" action="{{ url_for('main.part16_multimodel_outlier_detection') }}" method="post" enctype="multipart/form-data">
+            <input type="hidden" name="part16_tag_config" id="part16TagConfigFlag" value="">
+            <input type="hidden" name="part16_advanced_json" id="part16AdvancedJson" value="">
+            <div class="mb-3">
+              <label class="form-label-sm">Excel file (time-series, XLSX)</label>
+              <input class="form-control" id="part16FileInput" type="file" name="part16_multimodel_xlsx" accept=".xlsx" required>
+              <div id="part16PreviewHint" class="text-muted small mt-2">Choose a file to load tag names from the first row of the sheet.</div>
+            </div>
+            <div id="part16AdvancedPanels" class="mt-3" style="display:none;">
+              <div id="part16UnifiedTable" class="table-responsive mb-3" style="max-height: 520px;"></div>
+            </div>
+            <div id="part16ProcessSection" class="mt-3" style="display:none;">
+              <button class="btn btn-primary" id="part16SubmitBtn" type="submit" disabled>Process data</button>
+            </div>
+          </form>
+          <script>
+            (function () {
+              var DEFAULT_REF_Z = 3.75;
+              /* Labels aligned with services/robust_consensus_outlier_workflow.py SIGNAL_ENGINE_LABELS */
+              var ENGINE_DEFS = [
+                { id: "S1_GLOBAL", label: "Global Robust Z", info: "Signed robust z vs the tag's clean median and scaled MAD (whole-series baseline)." },
+                { id: "S2_LOCAL", label: "Local Rolling Z (31 Days)", info: "Rolling median/MAD around each point so slow drift does not drown local spikes." },
+                { id: "S3_TUKEY", label: "Tukey Outer Fence", info: "Distance to Tukey-style outer fences on a trimmed inner distribution (IQR-based)." },
+                { id: "S4_DIFF", label: "First-Difference Z", info: "Robust z on first differences—flags sharp steps even when the level looks normal." },
+                { id: "S5_PEER", label: "Peer Residual Z", info: "Residual vs correlated peer tags—excursion not explained by peers' joint behavior." },
+                { id: "S6_LONG", label: "Long Window Z (trailing regime)", info: "Each point vs a trailing long-window median/MAD for slow regime or baseline shifts." },
+                { id: "S7_TREND", label: "Trend-gap Z (short vs long median)", info: "Gap between short and long rolling medians to catch ramps and trend breaks." },
+                { id: "S8_EARLY", label: "Early Segment Z", info: "Early portion of the series vs a later baseline to highlight startup or initial anomalies." }
+              ];
+              var PLANT_OP_OPTS = [
+                ["==", "=="],
+                [">", ">"],
+                [">=", ">="],
+                ["<", "<"],
+                ["<=", "<="],
+                ["!=", "!="]
+              ];
+              var fileEl = document.getElementById("part16FileInput");
+              var flagEl = document.getElementById("part16TagConfigFlag");
+              var advJsonEl = document.getElementById("part16AdvancedJson");
+              var panels = document.getElementById("part16AdvancedPanels");
+              var hint = document.getElementById("part16PreviewHint");
+              var tableHost = document.getElementById("part16UnifiedTable");
+              var form = document.getElementById("part16OutlierForm");
+              var submitBtn = document.getElementById("part16SubmitBtn");
+              var processSection = document.getElementById("part16ProcessSection");
+              function resetAfterFileChange() {
+                if (flagEl) flagEl.value = "";
+                if (advJsonEl) advJsonEl.value = "";
+                if (panels) panels.style.display = "none";
+                if (processSection) processSection.style.display = "none";
+                if (tableHost) tableHost.innerHTML = "";
+                if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Process data"; }
+              }
+              function syncTier2ForRow(tr) {
+                var cb = tr.querySelector("input.part16-crit");
+                var on = cb && cb.checked;
+                Array.prototype.forEach.call(tr.querySelectorAll(".part16-tier2"), function (el) { el.disabled = !on; });
+              }
+              function syncPlantRow(tr) {
+                var en = tr.querySelector("input.part16-plant-en");
+                var sel = tr.querySelector("select.part16-plant-op");
+                var vin = tr.querySelector("input.part16-plant-val");
+                var allow = !!(en && en.checked);
+                if (sel) sel.disabled = !allow;
+                if (vin) vin.disabled = !allow;
+              }
+              function getCriticalTags() {
+                if (!form) return [];
+                return Array.prototype.map.call(form.querySelectorAll("input.part16-crit:checked"), function (x) { return x.value; });
+              }
+              function rowForTag(tag) {
+                var found = null;
+                Array.prototype.forEach.call(form.querySelectorAll("tr.part16-data-row"), function (tr) {
+                  if (tr.getAttribute("data-row") === tag) found = tr;
+                });
+                return found;
+              }
+              function renderUnifiedTable(tags) {
+                if (!tableHost) return;
+                tableHost.innerHTML = "";
+                var table = document.createElement("table");
+                table.className = "table table-sm table-bordered mb-0 align-middle part16-unified-table";
+                var thead = document.createElement("thead");
+                var hr = document.createElement("tr");
+                function th(txt, title, cls) {
+                  var h = document.createElement("th");
+                  h.textContent = txt;
+                  if (title) { h.title = title; }
+                  h.style.fontSize = "11px";
+                  if (cls) h.className = cls;
+                  return h;
+                }
+                hr.appendChild(th("Tag", "Tag column name", "part16-col-tag"));
+                hr.appendChild(th("Crit.", "Include in results; enables threshold value, signals, and direction", "text-center part16-col-crit"));
+                hr.appendChild(th("Plant", "Enable Plant, pick operator, then enter a numeric value only — rows matching (tag operator value) are dropped before detection (OR across tags).", "part16-col-plant"));
+                hr.appendChild(th("Threshold value", "Robust-z reference multiplier vs preset for this tag (critical tags only).", "text-center part16-col-z"));
+                ENGINE_DEFS.forEach(function (e) {
+                  var h = document.createElement("th");
+                  h.className = "text-center part16-col-eng";
+                  var inner = document.createElement("div");
+                  inner.className = "part16-eng-th-inner";
+                  var lab = document.createElement("span");
+                  lab.className = "part16-eng-th-label";
+                  lab.textContent = e.label;
+                  var info = document.createElement("span");
+                  info.className = "part16-eng-info";
+                  info.textContent = "i";
+                  info.title = e.info;
+                  info.setAttribute("aria-label", e.info);
+                  inner.appendChild(lab);
+                  inner.appendChild(info);
+                  h.appendChild(inner);
+                  hr.appendChild(h);
+                });
+                var thD = th("Direction", "Detection direction: both, up only, or down only (critical tags only).");
+                thD.className = "text-center part16-col-dir";
+                hr.appendChild(thD);
+                thead.appendChild(hr);
+                table.appendChild(thead);
+                var tb = document.createElement("tbody");
+                tags.forEach(function (tag) {
+                  var tr = document.createElement("tr");
+                  tr.className = "part16-data-row";
+                  tr.setAttribute("data-row", tag);
+                  var td0 = document.createElement("td");
+                  td0.className = "part16-col-tag";
+                  td0.appendChild(document.createElement("code")).textContent = tag;
+                  tr.appendChild(td0);
+                  var tdC = document.createElement("td");
+                  tdC.className = "text-center part16-col-crit";
+                  var inCrit = document.createElement("input");
+                  inCrit.type = "checkbox";
+                  inCrit.className = "form-check-input part16-crit";
+                  inCrit.name = "critical_tags";
+                  inCrit.value = tag;
+                  inCrit.checked = true;
+                  inCrit.addEventListener("change", function () { syncTier2ForRow(tr); });
+                  tdC.appendChild(inCrit);
+                  tr.appendChild(tdC);
+                  var tdPlant = document.createElement("td");
+                  tdPlant.className = "part16-plant-cell";
+                  var innerP = document.createElement("div");
+                  innerP.className = "part16-plant-inner";
+                  var plantTop = document.createElement("div");
+                  plantTop.className = "part16-plant-top";
+                  var plantEn = document.createElement("input");
+                  plantEn.type = "checkbox";
+                  plantEn.className = "form-check-input part16-plant-en";
+                  plantEn.title = "Enable plant row filter for this tag";
+                  plantEn.addEventListener("change", function () { syncPlantRow(tr); });
+                  var plantLbl = document.createElement("label");
+                  plantLbl.className = "form-check-label mb-0 text-muted";
+                  plantLbl.style.cursor = "pointer";
+                  plantLbl.appendChild(plantEn);
+                  plantLbl.appendChild(document.createTextNode(" Plant"));
+                  plantTop.appendChild(plantLbl);
+                  innerP.appendChild(plantTop);
+                  var flexP = document.createElement("div");
+                  flexP.className = "part16-plant-row-flex";
+                  var selP = document.createElement("select");
+                  selP.className = "form-select form-select-sm part16-plant-op";
+                  selP.disabled = true;
+                  PLANT_OP_OPTS.forEach(function (o, i) {
+                    var opt = document.createElement("option");
+                    opt.value = o[0]; opt.textContent = o[1]; if (i === 0) opt.selected = true; selP.appendChild(opt);
+                  });
+                  flexP.appendChild(selP);
+                  var inPv = document.createElement("input");
+                  inPv.type = "number";
+                  inPv.step = "any";
+                  inPv.inputMode = "decimal";
+                  inPv.className = "form-control form-control-sm part16-plant-val";
+                  inPv.placeholder = "0";
+                  inPv.title = "Numeric compare value only (required when Plant filter is on).";
+                  inPv.disabled = true;
+                  flexP.appendChild(inPv);
+                  innerP.appendChild(flexP);
+                  tdPlant.appendChild(innerP);
+                  tr.appendChild(tdPlant);
+                  var tdZ = document.createElement("td");
+                  tdZ.className = "part16-z-cell";
+                  var inpT = document.createElement("input");
+                  inpT.type = "number";
+                  inpT.step = "0.05";
+                  inpT.min = "0.1";
+                  inpT.className = "form-control form-control-sm part16-th part16-tier2";
+                  inpT.value = String(DEFAULT_REF_Z);
+                  inpT.title = "Scales per-signal limits vs preset from this threshold value (critical tags only).";
+                  tdZ.appendChild(inpT);
+                  tr.appendChild(tdZ);
+                  ENGINE_DEFS.forEach(function (e) {
+                    var td = document.createElement("td");
+                    td.className = "text-center part16-col-eng";
+                    var cb = document.createElement("input");
+                    cb.type = "checkbox";
+                    cb.className = "form-check-input part16-eng part16-tier2";
+                    cb.checked = true;
+                    cb.setAttribute("data-eng", e.id);
+                    td.appendChild(cb);
+                    tr.appendChild(td);
+                  });
+                  var tdD = document.createElement("td");
+                  tdD.className = "text-center part16-col-dir";
+                  var sel = document.createElement("select");
+                  sel.className = "form-select form-select-sm part16-dir part16-tier2";
+                  [["both", "Both"], ["up", "Up only"], ["down", "Down only"]].forEach(function (o) {
+                    var opt = document.createElement("option");
+                    opt.value = o[0]; opt.textContent = o[1]; sel.appendChild(opt);
+                  });
+                  tdD.appendChild(sel);
+                  tr.appendChild(tdD);
+                  tb.appendChild(tr);
+                  syncTier2ForRow(tr);
+                  syncPlantRow(tr);
+                });
+                table.appendChild(tb);
+                tableHost.appendChild(table);
+              }
+              function serializePart16() {
+                var plant_row_filters = [];
+                Array.prototype.forEach.call(form.querySelectorAll("tr.part16-data-row"), function (tr) {
+                  var plantOn = tr.querySelector("input.part16-plant-en");
+                  if (!plantOn || !plantOn.checked) return;
+                  var tag = tr.getAttribute("data-row");
+                  var opSel = tr.querySelector("select.part16-plant-op");
+                  var op = opSel && opSel.value ? opSel.value : "";
+                  if (!op) return;
+                  var vin = tr.querySelector("input.part16-plant-val");
+                  var raw = vin && vin.value !== undefined && vin.value !== null ? String(vin.value).trim() : "";
+                  if (raw === "") return;
+                  var num = parseFloat(raw);
+                  if (!isFinite(num)) return;
+                  plant_row_filters.push({ status_tag: tag, operator: op, value: num });
+                });
+                var tag_config = {};
+                getCriticalTags().forEach(function (tag) {
+                  var tr = rowForTag(tag);
+                  if (!tr) return;
+                  var thIn = tr.querySelector("input.part16-th");
+                  var thr = parseFloat(thIn && thIn.value ? thIn.value : DEFAULT_REF_Z);
+                  if (!isFinite(thr) || thr <= 0) thr = DEFAULT_REF_Z;
+                  var engines = [];
+                  Array.prototype.forEach.call(tr.querySelectorAll("input.part16-eng"), function (cb) {
+                    if (cb.checked) engines.push(cb.getAttribute("data-eng"));
+                  });
+                  if (engines.length === 0) engines = ENGINE_DEFS.map(function (e) { return e.id; });
+                  var dirSel = tr.querySelector("select.part16-dir");
+                  var direction = dirSel ? dirSel.value : "both";
+                  tag_config[tag] = { threshold: thr, selected_engines: engines, direction: direction };
+                });
+                return { plant_row_filters: plant_row_filters, tag_config: tag_config };
+              }
+              function loadTagListFromFile() {
+                if (!fileEl || !fileEl.files || !fileEl.files[0]) { if (hint) hint.textContent = "Choose an Excel file first."; return; }
+                var fd = new FormData(); fd.append("file", fileEl.files[0]);
+                if (hint) hint.textContent = "Loading tag list…";
+                fetch("{{ url_for('main.api_part8_preview_tags') }}", { method: "POST", body: fd })
+                  .then(function (r) { return r.json(); })
+                  .then(function (data) {
+                    if (!data.ok || !data.tags || data.tags.length === 0) {
+                      if (hint) hint.textContent = (data && data.error) || "No tags found in file.";
+                      resetAfterFileChange();
+                      return;
+                    }
+                    renderUnifiedTable(data.tags);
+                    if (flagEl) flagEl.value = "1";
+                    if (panels) panels.style.display = "block";
+                    if (processSection) processSection.style.display = "block";
+                    if (submitBtn) submitBtn.disabled = false;
+                    if (hint) hint.textContent = "Loaded " + data.tags.length + " tag(s). Configure the table, then click Process data.";
+                  })
+                  .catch(function () { if (hint) hint.textContent = "Network error loading tags."; resetAfterFileChange(); });
+              }
+              if (fileEl) fileEl.addEventListener("change", function () {
+                resetAfterFileChange();
+                if (!fileEl.files || !fileEl.files[0]) { if (hint) hint.textContent = "Choose a file to load tag names from the first row of the sheet."; return; }
+                loadTagListFromFile();
+              });
+              if (form) form.addEventListener("submit", function (e) {
+                if (!flagEl || flagEl.value !== "1") { e.preventDefault(); alert("Choose an Excel file first so tags can load."); return; }
+                if (form.querySelectorAll("input.part16-crit:checked").length === 0) {
+                  e.preventDefault(); alert("Select at least one critical tag."); return;
+                }
+                var crit = getCriticalTags();
+                for (var i = 0; i < crit.length; i++) {
+                  var tr = rowForTag(crit[i]);
+                  if (!tr) continue;
+                  var nEng = tr.querySelectorAll("input.part16-eng:checked").length;
+                  if (nEng < 1) { e.preventDefault(); alert("Select at least one signal engine for tag " + crit[i]); return; }
+                }
+                var plantErr = null;
+                Array.prototype.forEach.call(form.querySelectorAll("tr.part16-data-row"), function (trp) {
+                  if (plantErr) return;
+                  var pOn = trp.querySelector("input.part16-plant-en");
+                  if (!pOn || !pOn.checked) return;
+                  var vinp = trp.querySelector("input.part16-plant-val");
+                  var rawp = vinp && vinp.value !== undefined && vinp.value !== null ? String(vinp.value).trim() : "";
+                  if (rawp === "" || !isFinite(parseFloat(rawp))) {
+                    plantErr = trp.getAttribute("data-row") || "";
+                  }
+                });
+                if (plantErr !== null) {
+                  e.preventDefault();
+                  alert("Plant filter for tag " + plantErr + " requires a numeric value.");
+                  return;
+                }
+                var payload = serializePart16();
+                if (advJsonEl) advJsonEl.value = JSON.stringify(payload);
+                showLoaderOverlay();
+                if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Processing full dataset…"; }
+              });
+            })();
+          </script>
+        </div>

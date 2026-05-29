@@ -43,6 +43,7 @@
         {% if database_enabled %}
         <a class="sidebar-link d-none {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
         <a class="sidebar-link {% if request.endpoint in ('main.live_outlier_results', 'main.live_outlier_result_detail') %}active{% endif %}" href="{{ url_for('main.live_outlier_results') }}">Live Outlier detection</a>
+        <a class="sidebar-link {% if request.endpoint == 'main.rolling_outlier_results' %}active{% endif %}" href="{{ url_for('main.rolling_outlier_results') }}">Rolling Outlier Detection</a>
         {% endif %}
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
@@ -58,6 +59,7 @@
         <a class="sidebar-link {% if active_tab == 'part14' %}active{% endif %}" href="{{ url_for('main.index', tab='part14') }}">Multi-signal consensus outlier</a>
         <a class="sidebar-link {% if active_tab == 'part15' %}active{% endif %}" href="{{ url_for('main.index', tab='part15') }}">Dev (Outlier detection)</a>
         <a class="sidebar-link d-none {% if active_tab == 'part10' %}active{% endif %}" href="{{ url_for('main.index', tab='part10') }}">Testing (V7)</a>
+        <a class="sidebar-link {% if active_tab == 'part16' %}active{% endif %}" href="{{ url_for('main.index', tab='part16') }}">Multimodel Outlier Detection</a>
         {% if database_enabled %}
         <a class="sidebar-link d-none {% if request.endpoint in ('main.data_browse', 'main.data_timeseries_detail', 'main.data_causal_detail') %}active{% endif %}" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
         <a class="sidebar-link d-none {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
@@ -98,6 +100,8 @@
           Dev (Outlier detection)
         {% elif active_tab == 'part10' %}
           Testing — Tri-Engine Fusion (V7)
+        {% elif active_tab == 'part16' %}
+          Multimodel Outlier Detection
         {% else %}
           Offline VC
         {% endif %}
@@ -1095,6 +1099,8 @@
             Slower than a single tab (all three pipelines). Same wide / All_Results formats as outlier detection (using data model) where applicable.
           </div>
         </div>
+        {% elif active_tab == 'part16' %}
+        {% include 'partials/part16_multimodel_form.html' %}
         {% else %}
         {% if active_tab == 'part3' %}
         <div class="card-header home-tab-header border-bottom-0 bg-white pt-3 px-3 pb-0">

@@ -1286,3 +1286,142 @@ def live_outlier_tag_row_count_for_run_day(
             )
             r = cur.fetchone()
             return int(r[0]) if r and r[0] is not None else 0
+
+
+def list_timeseries_observations_for_dataset(dataset_id: int) -> List[Dict[str, Any]]:
+    """All observations for one timeseries dataset in stable row/tag order."""
+    if not is_configured():
+        return []
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT row_index, observed_at, observed_at_raw, tag_name, value
+                FROM timeseries_observation FORCE INDEX (uq_timeseries_obs)
+                WHERE dataset_id = %s
+                ORDER BY row_index ASC, tag_name ASC
+                """,
+                (int(dataset_id),),
+            )
+            cols = [d[0] for d in cur.description]
+            out = [dict(zip(cols, row)) for row in cur.fetchall()]
+            for d in out:
+                if d.get("observed_at"):
+                    d["observed_at"] = d["observed_at"].isoformat()
+            return out
+
+
+def rolling_outlier_list_runs(limit: int = 100) -> List[Dict[str, Any]]:
+    if not is_configured():
+        return []
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, timeseries_dataset_id, dataset_name, window_size, window_mode,
+                       baseline_rows, status, error_message, rows_processed, tags_processed,
+                       created_at, finished_at
+                FROM rolling_outlier_run
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                (int(limit),),
+            )
+            cols = [d[0] for d in cur.description]
+            out = [dict(zip(cols, row)) for row in cur.fetchall()]
+            for d in out:
+                if d.get("created_at"):
+                    d["created_at"] = d["created_at"].isoformat()
+                if d.get("finished_at"):
+                    d["finished_at"] = d["finished_at"].isoformat()
+            return out
+
+
+def rolling_outlier_run_by_id(run_id: int) -> Optional[Dict[str, Any]]:
+    if not is_configured():
+        return None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, timeseries_dataset_id, dataset_name, window_size, window_mode,
+                       baseline_rows, status, error_message, rows_processed, tags_processed,
+                       created_at, finished_at
+                FROM rolling_outlier_run
+                WHERE id = %s
+                """,
+                (int(run_id),),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cur.description]
+            d = dict(zip(cols, row))
+            if d.get("created_at"):
+                d["created_at"] = d["created_at"].isoformat()
+            if d.get("finished_at"):
+                d["finished_at"] = d["finished_at"].isoformat()
+            return d
+
+
+def rolling_outlier_tag_series(run_id: int, tag: str) -> List[Dict[str, Any]]:
+    if not is_configured():
+        return []
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT row_index, observed_at, observed_at_raw, tag_name, tag_value,
+                       baseline_mean, baseline_std, z_score, lower_limit, upper_limit, status, reason
+                FROM rolling_outlier_result
+                WHERE run_id = %s AND tag_name = %s
+                ORDER BY row_index ASC
+                """,
+                (int(run_id), str(tag)),
+            )
+            cols = [d[0] for d in cur.description]
+            out = [dict(zip(cols, row)) for row in cur.fetchall()]
+            for d in out:
+                if d.get("observed_at"):
+                    d["observed_at"] = d["observed_at"].isoformat()
+            return out
+
+
+def rolling_outlier_distinct_tags(run_id: int) -> List[str]:
+    if not is_configured():
+        return []
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT tag_name
+                FROM rolling_outlier_result
+                WHERE run_id = %s
+                ORDER BY tag_name ASC
+                """,
+                (int(run_id),),
+            )
+            return [str(r[0]) for r in cur.fetchall() if r and r[0]]
+
+
+def rolling_outlier_rows_by_run(run_id: int) -> List[Dict[str, Any]]:
+    if not is_configured():
+        return []
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT row_index, observed_at, observed_at_raw, tag_name, tag_value,
+                       baseline_mean, baseline_std, z_score, lower_limit, upper_limit, status, reason
+                FROM rolling_outlier_result
+                WHERE run_id = %s
+                ORDER BY row_index ASC, tag_name ASC
+                """,
+                (int(run_id),),
+            )
+            cols = [d[0] for d in cur.description]
+            out = [dict(zip(cols, row)) for row in cur.fetchall()]
+            for d in out:
+                if d.get("observed_at"):
+                    d["observed_at"] = d["observed_at"].isoformat()
+            return out

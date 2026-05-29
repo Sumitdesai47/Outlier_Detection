@@ -65,6 +65,7 @@ from services.auto_without_causal_outlier_drift import (
     clip_plot_inputs_to_wide_timestamps,
     wide_rows_plant_indicator_off,
 )
+from services.dynamic_tag_group_analysis import build_dynamic_peer_models
 
 
 # ----------------------------------------------------------------------------
@@ -84,6 +85,14 @@ CONFIG: Dict[str, Any] = {
     "max_peers": 5,
     "min_peer_abs_corr": 0.35,
     "ridge_alpha": 1.0,
+    # Dynamic peer selection (services/dynamic_tag_group_analysis.py).
+    "use_dynamic_peer_selection": True,
+    "dynamic_top_n_correlation": 10,
+    "dynamic_top_n_mutual_info": 10,
+    "dynamic_top_n_lag": 10,
+    "dynamic_max_lag": 5,
+    "dynamic_final_top_features": 5,
+    "dynamic_cluster_distance_threshold": 0.5,
     # Decision.
     "n_actual_consensus": 3,            # base count for actual outlier (used with the stricter rule below)
     "n_warning_consensus": 2,
@@ -757,6 +766,8 @@ def run_robust_consensus_outlier_ui(
     plant_status_filter: Optional[Dict[str, Any]] = None,
     plant_row_filters: Optional[List[Dict[str, Any]]] = None,
     per_tag_controls: Optional[Dict[str, Dict[str, Any]]] = None,
+    use_multimodel_s5: bool = False,
+    multimodel_s5_tags: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     cfg = CONFIG.copy()
     if config:
@@ -813,9 +824,33 @@ def run_robust_consensus_outlier_ui(
     # ------------------------------------------------------------------
     baseline = _build_baseline(df, tag_cols, cfg)
     base_idx = baseline.set_index("Tag")
-    peers_by_tag: Dict[str, List[Tuple[str, float]]] = {
-        tag: _pick_peers(df, tag, tag_cols, cfg) for tag in tag_cols
-    }
+    peers_by_tag, x_variables_by_tag = build_dynamic_peer_models(
+        df,
+        tag_cols,
+        cfg,
+        fallback_peers_fn=_pick_peers,
+    )
+
+    multimodel_s5_by_tag: Dict[str, Dict[str, Any]] = {}
+    multimodel_meta_by_tag: Dict[str, Dict[str, Any]] = {}
+    if use_multimodel_s5:
+        from services.multimodel_outlier.pipeline import (
+            build_multimodel_s5_by_tag,
+            multimodel_meta_for_ui,
+        )
+
+        if multimodel_s5_tags is not None:
+            mm_targets = [str(t) for t in multimodel_s5_tags if str(t) in tag_cols]
+        else:
+            mm_targets = [str(t) for t in tag_cols]
+        multimodel_s5_by_tag = build_multimodel_s5_by_tag(df, tag_cols, mm_targets, cfg=None)
+        for tag, mm in multimodel_s5_by_tag.items():
+            if mm.get("error"):
+                multimodel_meta_by_tag[str(tag)] = multimodel_meta_for_ui(mm)
+                continue
+            if mm.get("x_variables"):
+                x_variables_by_tag[str(tag)] = list(mm["x_variables"])
+            multimodel_meta_by_tag[str(tag)] = multimodel_meta_for_ui(mm)
 
     # ------------------------------------------------------------------
     # 3) Build signals per tag (S1–S5 always; S6–S7 when long_regime_window > 0).
@@ -873,21 +908,28 @@ def run_robust_consensus_outlier_ui(
         else:
             z_diff = pd.Series(np.nan, index=x.index)
 
-        # S5 — peer-regression residual MAD-z, with predicted value.
+        # S5 — peer-regression residual MAD-z (ridge peers or multimodel prediction).
+        mm = multimodel_s5_by_tag.get(str(tag)) if multimodel_s5_by_tag else None
         peer_list = peers_by_tag.get(tag) or []
         predicted = pd.Series(np.nan, index=x.index)
         z_peer = pd.Series(np.nan, index=x.index)
         peer_used: List[str] = []
-        if peer_list:
+        if mm and not mm.get("error"):
+            predicted = pd.Series(mm.get("predicted"), index=x.index)
+            z_peer = pd.Series(mm.get("z_peer"), index=x.index)
+            peer_used = [
+                str(v.get("tag") or v.get("feature_name") or "")
+                for v in (mm.get("x_variables") or [])
+                if v.get("tag") or v.get("feature_name")
+            ][:8]
+        elif peer_list:
             peer_names = [p for p, _ in peer_list]
             peer_used = peer_names
             X = df[peer_names].apply(pd.to_numeric, errors="coerce").to_numpy()
             y = x.to_numpy(dtype=float)
             mask = np.isfinite(X).all(axis=1) & np.isfinite(y)
             if mask.sum() >= 30:
-                # Use clean rows = those NOT extreme by S1 OR with z_global not yet flagged.
                 clean_mask = mask & (z_global.abs().fillna(0) < float(local_cfg["k_global_robust_z"]))
-                # Need enough clean rows; if too few, use all valid mask.
                 if int(clean_mask.sum()) < max(30, len(peer_names) * 5):
                     clean_mask = mask
                 Xb = np.column_stack([np.ones(X.shape[0]), X])
@@ -1304,13 +1346,6 @@ def run_robust_consensus_outlier_ui(
             "strong_anomaly_upper_limit": max(med + strong_z * scale, outer_hi),
         }
 
-    # Top peers per tag for the X-variables panel.
-    x_variables_by_tag: Dict[str, List[Dict[str, Any]]] = {}
-    for tag in tag_cols:
-        x_variables_by_tag[str(tag)] = [
-            {"tag": p, "corr": _safe_float(c)} for p, c in (peers_by_tag.get(tag) or [])
-        ]
-
     # Per-tag summaries / details.
     non_normal = all_results[all_results["Final_Status"] != "Normal"].copy()
     tag_summaries: List[Dict[str, Any]] = []
@@ -1398,6 +1433,16 @@ def run_robust_consensus_outlier_ui(
         tag_summaries, key=lambda r: int(r.get("num_drift_points") or 0), reverse=True
     )
 
+    sudden_jumps_by_tag: Dict[str, int] = {}
+    if "Fire_S4_DIFF" in all_results.columns:
+        for tag in tag_cols:
+            mask = all_results["Tag"].astype(str) == str(tag)
+            sudden_jumps_by_tag[str(tag)] = int(
+                all_results.loc[mask, "Fire_S4_DIFF"].fillna(False).astype(bool).sum()
+            )
+    else:
+        sudden_jumps_by_tag = {str(tag): 0 for tag in tag_cols}
+
     # Wide for plotting (uses mapped plot classes).
     wide_plot, out_df = _build_plot_inputs(display_results)
     clip_requested = bool(shutdown_indicator_tags) or bool(
@@ -1432,6 +1477,13 @@ def run_robust_consensus_outlier_ui(
         "timestamp_summary_rows": timestamp_summary_rows,
         "tag_limits_by_tag": tag_limits_by_tag,
         "x_variables_by_tag": x_variables_by_tag,
+        "peer_selection_mode": (
+            "multimodel_s5"
+            if use_multimodel_s5
+            else ("dynamic_tag_group" if cfg.get("use_dynamic_peer_selection", True) else "pearson_top_k")
+        ),
+        "sudden_jumps_by_tag": sudden_jumps_by_tag,
+        "multimodel_meta_by_tag": multimodel_meta_by_tag,
     }
     _v5_apply_critical_display_filter(out, tag_cols=tag_cols, critical_tags=critical_tags)
     return out

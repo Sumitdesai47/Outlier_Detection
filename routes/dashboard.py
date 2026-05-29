@@ -45,6 +45,7 @@ from services.auto_without_causal_outlier_drift import (
 from services.combined_outlier_workflow import run_combined_outlier_drift_ui
 from services.cluster_zscore_outlier_workflow import run_cluster_zscore_outlier_ui
 from services.dev_outlier_detection_tab import handle_part15_post_request
+from services.multimodel_outlier_tab import handle_part16_post_request
 from services.robust_consensus_outlier_workflow import (
     MULTI_SIGNAL_PRESET,
     run_robust_consensus_outlier_ui,
@@ -58,6 +59,16 @@ from services.live_outlier_dashboard import (
 )
 from services.live_outlier_excel_upload import insert_live_outlier_excel_upload
 from services.scheduled_anomaly_runner import floor_day_utc_naive
+from services.consensus_results_export import (
+    build_export_csv_zip,
+    build_export_pdf_html,
+    build_export_xlsx,
+)
+from services.consensus_results_view import (
+    build_executive_summary,
+    build_tag_analysis_rows,
+    build_tag_insights,
+)
 from services.session_cache import part2_load, part2_store, part3_load, part3_store
 from services.uploads import save_upload_to_temp
 from services.dataset_upload_parse import validate_excel_filename
@@ -65,9 +76,89 @@ from services.plant_dataset_upload import insert_plant_upload_transaction
 from services.dashboard_overview import build_dashboard_snapshot
 from services.live_dashboard_status import build_plant_live_status
 from services.scheduled_anomaly_runner import run_live_dashboard_catchup
+from services.rolling_outlier_service import (
+    build_wide_from_observation_rows,
+    run_rolling_detection,
+)
 
 bp = Blueprint("main", __name__)
 logger = logging.getLogger(__name__)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _consensus_all_plot_tags(df_for_script) -> list[str]:
+    return sorted(c for c in df_for_script.columns if c != "Timestamp")
+
+
+def _consensus_drift_points_by_tag(tag_summaries) -> dict[str, int]:
+    return {
+        str(t.get("tag")): int(t.get("num_drift_points") or 0)
+        for t in (tag_summaries or [])
+        if t.get("tag")
+    }
+
+
+def _build_consensus_export_payload(result: dict, df_for_script) -> dict:
+    all_plot_tags = _consensus_all_plot_tags(df_for_script)
+    tag_summaries = result.get("tag_summaries") or []
+    return {
+        "summary": result.get("summary") or {},
+        "tag_summaries": tag_summaries,
+        "details_by_tag": result.get("details_by_tag") or {},
+        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+        "all_plot_tags": all_plot_tags,
+        "x_variables_by_tag": result.get("x_variables_by_tag") or {},
+        "drift_points_by_tag": _consensus_drift_points_by_tag(tag_summaries),
+        "sudden_jumps_by_tag": result.get("sudden_jumps_by_tag") or {},
+    }
+
+
+def _build_part4_consensus_context(result: dict, result_id: str, df_for_script) -> dict:
+    all_plot_tags = _consensus_all_plot_tags(df_for_script)
+    tag_summaries = result.get("tag_summaries") or []
+    details_by_tag = result.get("details_by_tag") or {}
+    x_variables_by_tag = result.get("x_variables_by_tag") or {}
+    drift_points_by_tag = _consensus_drift_points_by_tag(tag_summaries)
+    summary = result.get("summary") or {}
+    executive = build_executive_summary(
+        summary,
+        tag_summaries,
+        all_plot_tags,
+        df_for_script=df_for_script,
+        details_by_tag=details_by_tag,
+        drift_points_by_tag=drift_points_by_tag,
+    )
+    sudden_jumps_by_tag = result.get("sudden_jumps_by_tag") or {}
+    tag_analysis = build_tag_analysis_rows(
+        all_plot_tags,
+        tag_summaries,
+        details_by_tag,
+        x_variables_by_tag,
+        drift_points_by_tag,
+        sudden_jumps_by_tag,
+    )
+    insights_by_tag = {
+        str(tag): build_tag_insights(str(tag), details_by_tag, x_variables_by_tag)
+        for tag in all_plot_tags
+    }
+    return {
+        "result_id": result_id,
+        "summary": summary,
+        "top_tags_by_points": result.get("top_tags_by_points") or [],
+        "tag_names": [t.get("tag") for t in tag_summaries if t.get("tag")],
+        "all_plot_tags": all_plot_tags,
+        "tag_summaries": tag_summaries,
+        "drift_points_by_tag": drift_points_by_tag,
+        "details_by_tag": details_by_tag,
+        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
+        "tag_limits_by_tag": result.get("tag_limits_by_tag") or {},
+        "x_variables_by_tag": x_variables_by_tag,
+        "executive": executive,
+        "tag_analysis": tag_analysis,
+        "insights_by_tag": insights_by_tag,
+        "multimodel_meta_by_tag": result.get("multimodel_meta_by_tag") or {},
+    }
+
 
 # If this path points to an existing XLSX, the app treats a causal matrix as "available"
 # and opens the Anomaly detection tab by default (unless ?tab= or last workflow overrides).
@@ -81,7 +172,7 @@ def _causal_matrix_file_configured() -> bool:
 
 def _resolve_home_tab() -> str:
     q = (request.args.get("tab") or "").strip().lower()
-    if q in {"part2", "part3", "part4", "part5", "part6", "part7", "part8", "part9", "part10", "part11", "part12", "part13", "part14", "part15"}:
+    if q in {"part2", "part3", "part4", "part5", "part6", "part7", "part8", "part9", "part10", "part11", "part12", "part13", "part14", "part15", "part16"}:
         return q
     if q == "db":
         return "part14"
@@ -269,6 +360,32 @@ def _data_browse_unreachable_response(tab: str):
 @bp.route("/")
 def index():
     return _render_index(active_tab=_resolve_home_tab())
+
+
+@bp.route("/part15/sample-template")
+def part15_sample_template():
+    path = os.path.join(PROJECT_ROOT, "docs", "dev_outlier_sample_template.xlsx")
+    if not os.path.isfile(path):
+        abort(404, description="Sample template file not found.")
+    return send_file(
+        path,
+        as_attachment=True,
+        download_name="dev_outlier_sample_template.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@bp.route("/part15/readme")
+def part15_readme_download():
+    path = os.path.join(PROJECT_ROOT, "docs", "Dev_Outlier_Tab_User_Guide.docx")
+    if not os.path.isfile(path):
+        abort(404, description="README file not found.")
+    return send_file(
+        path,
+        as_attachment=True,
+        download_name="DEV_OUTLIER_README.docx",
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
 
 
 def _hourly_results_unreachable(
@@ -964,6 +1081,135 @@ def live_outlier_result_detail():
         detail_plant_id=None,
         detail_excel_dataset_id=excel_id,
         data_source=data_source,
+    )
+
+
+@bp.route("/rolling-outlier-results", methods=["GET", "POST"])
+def rolling_outlier_results():
+    base = dict(
+        database_enabled=is_configured(),
+        db_unreachable=False,
+        error=None,
+        parse_error=None,
+        datasets=[],
+        selected_dataset_id=None,
+        runs=[],
+        selected_run=None,
+        selected_tag="",
+        tags=[],
+        series=[],
+    )
+    if not is_configured():
+        return render_template("rolling_outlier_results.html", **base)
+    ok, ping_err = ping_mysql()
+    if not ok:
+        ctx = dict(base)
+        ctx.update(db_unreachable=True, error=ping_err)
+        return render_template("rolling_outlier_results.html", **ctx)
+    try:
+        db_repo.apply_schema_if_needed()
+    except Exception as e:
+        ctx = dict(base)
+        ctx.update(db_unreachable=True, error=f"Schema apply failed: {e}")
+        return render_template("rolling_outlier_results.html", **ctx)
+
+    if request.method == "POST":
+        dataset_id = request.form.get("dataset_id", type=int)
+        window_size = request.form.get("window_size", type=int) or 30
+        window_mode = (request.form.get("window_mode") or "rolling").strip().lower()
+        if window_mode not in ("rolling", "expanding"):
+            window_mode = "rolling"
+        if not dataset_id:
+            ctx = dict(base)
+            ctx.update(error="Choose a dataset first.")
+            return render_template("rolling_outlier_results.html", **ctx)
+        try:
+            meta = db_queries.get_timeseries_dataset_meta(int(dataset_id))
+            obs = db_queries.list_timeseries_observations_for_dataset(int(dataset_id))
+            wide = build_wide_from_observation_rows(obs)
+            rows, run_meta = run_rolling_detection(
+                wide,
+                window_size=int(window_size),
+                window_mode=window_mode,
+            )
+            run_id = db_repo.persist_rolling_outlier_run(
+                timeseries_dataset_id=int(dataset_id),
+                dataset_name=str((meta or {}).get("original_filename") or f"dataset_{dataset_id}"),
+                window_size=int(window_size),
+                window_mode=window_mode,
+                baseline_rows=30,
+                records=rows,
+                rows_processed=int(run_meta.get("processed_timestamps") or 0),
+                tags_processed=int(run_meta.get("tags_count") or 0),
+            )
+            if not run_id:
+                raise RuntimeError("Failed to persist rolling outlier run.")
+            ctx = dict(base)
+            ctx.update(
+                selected_dataset_id=int(dataset_id),
+                selected_run=db_queries.rolling_outlier_run_by_id(int(run_id)),
+                runs=db_queries.rolling_outlier_list_runs(),
+                datasets=db_queries.list_timeseries_datasets_page(1, per_page=500)[0],
+                tags=db_queries.rolling_outlier_distinct_tags(int(run_id)),
+                selected_tag="",
+                series=[],
+            )
+            return render_template("rolling_outlier_results.html", **ctx)
+        except Exception as e:
+            logger.exception("rolling_outlier_results run failed: %s", e)
+            ctx = dict(base)
+            ctx.update(
+                error=f"Rolling run failed: {e}",
+                datasets=db_queries.list_timeseries_datasets_page(1, per_page=500)[0],
+                runs=db_queries.rolling_outlier_list_runs(),
+            )
+            return render_template("rolling_outlier_results.html", **ctx)
+
+    selected_dataset_id = request.args.get("dataset_id", type=int)
+    run_id = request.args.get("run_id", type=int)
+    selected_tag = (request.args.get("tag") or "").strip()
+    datasets = db_queries.list_timeseries_datasets_page(1, per_page=500)[0]
+    runs = db_queries.rolling_outlier_list_runs()
+    selected_run = db_queries.rolling_outlier_run_by_id(int(run_id)) if run_id else (runs[0] if runs else None)
+    tags: list[str] = []
+    series: list[dict] = []
+    if selected_run:
+        rid = int(selected_run["id"])
+        tags = db_queries.rolling_outlier_distinct_tags(rid)
+        if not selected_tag and tags:
+            selected_tag = tags[0]
+        if selected_tag:
+            series = db_queries.rolling_outlier_tag_series(rid, selected_tag)
+    ctx = dict(base)
+    ctx.update(
+        datasets=datasets,
+        selected_dataset_id=selected_dataset_id,
+        runs=runs,
+        selected_run=selected_run,
+        selected_tag=selected_tag,
+        tags=tags,
+        series=series,
+    )
+    return render_template("rolling_outlier_results.html", **ctx)
+
+
+@bp.route("/rolling-outlier-results/download/<int:run_id>")
+def rolling_outlier_download(run_id: int):
+    tag = (request.args.get("tag") or "").strip()
+    if tag:
+        rows = db_queries.rolling_outlier_tag_series(int(run_id), tag)
+    else:
+        rows = db_queries.rolling_outlier_rows_by_run(int(run_id))
+    if not rows:
+        return jsonify({"error": "No rows found for download"}), 404
+    df = pd.DataFrame(rows)
+    bio = BytesIO(df.to_csv(index=False).encode("utf-8"))
+    suffix = f"_{tag}" if tag else "_all"
+    return send_file(
+        bio,
+        as_attachment=True,
+        download_name=f"rolling_outlier_run_{run_id}{suffix}.csv",
+        mimetype="text/csv",
     )
 
 
@@ -1704,10 +1950,48 @@ def api_part4_plot(result_id: str):
             ctx["out_df"],
             tag,
             compare_tags=compare,
+            normalize_compare=len(compare) > 0,
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return Response(fig.to_json(), mimetype="application/json")
+
+
+@bp.route("/api/part4/export/<result_id>")
+def api_part4_export(result_id: str):
+    fmt = (request.args.get("format") or "xlsx").strip().lower()
+    tags = [t.strip() for t in request.args.getlist("tags") if t and str(t).strip()]
+    ctx = part3_load(result_id)
+    if not ctx:
+        return jsonify({"error": "expired or invalid session"}), 404
+
+    payload = dict(ctx.get("export_payload") or {})
+    payload["df_for_script"] = ctx.get("df_for_script")
+    tag_filter = tags or None
+
+    if fmt == "xlsx":
+        data = build_export_xlsx(payload, tags=tag_filter)
+        bio = BytesIO(data)
+        return send_file(
+            bio,
+            as_attachment=True,
+            download_name=f"consensus_results_{result_id}.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    if fmt == "csv":
+        data = build_export_csv_zip(payload, tags=tag_filter)
+        bio = BytesIO(data)
+        return send_file(
+            bio,
+            as_attachment=True,
+            download_name=f"consensus_results_{result_id}.zip",
+            mimetype="application/zip",
+        )
+    if fmt in {"pdf", "html"}:
+        html = build_export_pdf_html(payload, tags=tag_filter)
+        return Response(html, mimetype="text/html")
+
+    return jsonify({"error": "format must be xlsx, csv, or pdf"}), 400
 
 
 @bp.route("/part3/drift-detection", methods=["POST"])
@@ -2479,11 +2763,7 @@ def part14_multi_signal_consensus_outlier():
     df_for_script = result.pop("df_for_script")
     out_df = result.pop("out_df")
     result_id = uuid.uuid4().hex
-    export_payload = {
-        "tag_summaries": result.get("tag_summaries") or [],
-        "details_by_tag": result.get("details_by_tag") or {},
-        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
-    }
+    export_payload = _build_consensus_export_payload(result, df_for_script)
     part3_store(result_id, df_for_script, out_df, export_payload=export_payload)
 
     session["last_workflow"] = "outlier"
@@ -2493,23 +2773,7 @@ def part14_multi_signal_consensus_outlier():
         "results.html",
         part2=None,
         part3=None,
-        part4={
-            "result_id": result_id,
-            "summary": result.get("summary") or {},
-            "top_tags_by_points": result.get("top_tags_by_points") or [],
-            "tag_names": [t.get("tag") for t in (result.get("tag_summaries") or []) if t.get("tag")],
-            "all_plot_tags": sorted(c for c in df_for_script.columns if c != "Timestamp"),
-            "tag_summaries": result.get("tag_summaries") or [],
-            "drift_points_by_tag": {
-                str(t.get("tag")): int(t.get("num_drift_points") or 0)
-                for t in (result.get("tag_summaries") or [])
-                if t.get("tag")
-            },
-            "details_by_tag": result.get("details_by_tag") or {},
-            "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
-            "tag_limits_by_tag": result.get("tag_limits_by_tag") or {},
-            "x_variables_by_tag": result.get("x_variables_by_tag") or {},
-        },
+        part4=_build_part4_consensus_context(result, result_id, df_for_script),
         active_tab="part14",
         database_enabled=is_configured(),
     )
@@ -2525,11 +2789,7 @@ def part15_dev_outlier_detection():
     df_for_script = result.pop("df_for_script")
     out_df = result.pop("out_df")
     result_id = uuid.uuid4().hex
-    export_payload = {
-        "tag_summaries": result.get("tag_summaries") or [],
-        "details_by_tag": result.get("details_by_tag") or {},
-        "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
-    }
+    export_payload = _build_consensus_export_payload(result, df_for_script)
     part3_store(result_id, df_for_script, out_df, export_payload=export_payload)
 
     session["last_workflow"] = "outlier"
@@ -2539,23 +2799,7 @@ def part15_dev_outlier_detection():
         "results.html",
         part2=None,
         part3=None,
-        part4={
-            "result_id": result_id,
-            "summary": result.get("summary") or {},
-            "top_tags_by_points": result.get("top_tags_by_points") or [],
-            "tag_names": [t.get("tag") for t in (result.get("tag_summaries") or []) if t.get("tag")],
-            "all_plot_tags": sorted(c for c in df_for_script.columns if c != "Timestamp"),
-            "tag_summaries": result.get("tag_summaries") or [],
-            "drift_points_by_tag": {
-                str(t.get("tag")): int(t.get("num_drift_points") or 0)
-                for t in (result.get("tag_summaries") or [])
-                if t.get("tag")
-            },
-            "details_by_tag": result.get("details_by_tag") or {},
-            "monthly_pages_by_tag": result.get("monthly_pages_by_tag") or {},
-            "tag_limits_by_tag": result.get("tag_limits_by_tag") or {},
-            "x_variables_by_tag": result.get("x_variables_by_tag") or {},
-        },
+        part4=_build_part4_consensus_context(result, result_id, df_for_script),
         active_tab="part15",
         database_enabled=is_configured(),
     )
@@ -2605,6 +2849,31 @@ def part10_auto_testing_fusion_v7():
             "x_variables_by_tag": result.get("x_variables_by_tag") or {},
         },
         active_tab="part10",
+        database_enabled=is_configured(),
+    )
+
+
+@bp.route("/part16/multimodel-outlier-detection", methods=["POST"])
+def part16_multimodel_outlier_detection():
+    err, result = handle_part16_post_request(request)
+    if err or not result:
+        return _render_index(active_tab="part16", error=err or "Internal error.")
+
+    df_for_script = result.pop("df_for_script")
+    out_df = result.pop("out_df")
+    result_id = uuid.uuid4().hex
+    export_payload = _build_consensus_export_payload(result, df_for_script)
+    part3_store(result_id, df_for_script, out_df, export_payload=export_payload)
+
+    session["last_workflow"] = "outlier"
+    session.modified = True
+
+    return render_template(
+        "results.html",
+        part2=None,
+        part3=None,
+        part4=_build_part4_consensus_context(result, result_id, df_for_script),
+        active_tab="part16",
         database_enabled=is_configured(),
     )
 

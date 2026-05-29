@@ -41,6 +41,7 @@
         {% if database_enabled %}
         <a class="sidebar-link d-none {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
         <a class="sidebar-link {% if request.endpoint in ('main.live_outlier_results', 'main.live_outlier_result_detail') %}active{% endif %}" href="{{ url_for('main.live_outlier_results') }}">Live Outlier detection</a>
+        <a class="sidebar-link {% if request.endpoint == 'main.rolling_outlier_results' %}active{% endif %}" href="{{ url_for('main.rolling_outlier_results') }}">Rolling Outlier Detection</a>
         {% endif %}
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
@@ -53,8 +54,8 @@
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part10') }}">Testing (V7)</a>
         {% if database_enabled %}
         <a class="sidebar-link d-none {% if request.endpoint in ('main.data_browse', 'main.data_timeseries_detail', 'main.data_causal_detail') %}active{% endif %}" href="{{ url_for('main.data_browse') }}">Uploaded data</a>
-        <a class="sidebar-link d-none {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
-        <a class="sidebar-link d-none {% if request.endpoint == 'main.outlier_excel_upload_page' %}active{% endif %}" href="{{ url_for('main.outlier_excel_upload_page') }}">Live outlier data upload</a>
+        <a class="sidebar-link {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
+        <a class="sidebar-link {% if request.endpoint == 'main.outlier_excel_upload_page' %}active{% endif %}" href="{{ url_for('main.outlier_excel_upload_page') }}">Live outlier data upload</a>
         {% endif %}
       </nav>
       <div class="sidebar-help text-muted">

@@ -817,6 +817,82 @@ def persist_outlier_run(
         return None
 
 
+def persist_rolling_outlier_run(
+    *,
+    timeseries_dataset_id: int,
+    dataset_name: str,
+    window_size: int,
+    window_mode: str,
+    baseline_rows: int,
+    records: List[Dict[str, Any]],
+    rows_processed: int,
+    tags_processed: int,
+    error_message: Optional[str] = None,
+) -> Optional[int]:
+    """Persist a rolling outlier run and its per-tag rows."""
+    if not is_configured():
+        return None
+    try:
+        apply_schema_if_needed()
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                status = "failed" if error_message else "completed"
+                cur.execute(
+                    """
+                    INSERT INTO rolling_outlier_run
+                        (timeseries_dataset_id, dataset_name, window_size, window_mode, baseline_rows,
+                         status, error_message, rows_processed, tags_processed, finished_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(6))
+                    """,
+                    (
+                        int(timeseries_dataset_id),
+                        str(dataset_name),
+                        int(window_size),
+                        str(window_mode),
+                        int(baseline_rows),
+                        status,
+                        error_message,
+                        int(rows_processed),
+                        int(tags_processed),
+                    ),
+                )
+                run_id = int(cur.lastrowid)
+                if records:
+                    tuples = [
+                        (
+                            run_id,
+                            int(r.get("row_index") or 0),
+                            r.get("observed_at"),
+                            r.get("observed_at_raw"),
+                            str(r.get("tag_name") or ""),
+                            r.get("tag_value"),
+                            r.get("baseline_mean"),
+                            r.get("baseline_std"),
+                            r.get("z_score"),
+                            r.get("lower_limit"),
+                            r.get("upper_limit"),
+                            str(r.get("status") or "Normal"),
+                            str(r.get("reason") or ""),
+                        )
+                        for r in records
+                    ]
+                    _executemany_chunked(
+                        cur,
+                        """
+                        INSERT INTO rolling_outlier_result
+                          (run_id, row_index, observed_at, observed_at_raw, tag_name, tag_value,
+                           baseline_mean, baseline_std, z_score, lower_limit, upper_limit, status, reason)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        tuples,
+                        chunk_size=2000,
+                    )
+        return run_id
+    except Exception as e:
+        logger.exception("persist_rolling_outlier_run: %s", e)
+        return None
+
+
 def delete_scheduled_jobs_from_hour_bucket_onwards(hour_bucket: datetime) -> int:
     """Remove scheduled rows with hour_bucket >= that UTC day start (cascades drift/root)."""
     if not is_configured():

@@ -25,7 +25,7 @@
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part9') }}">Outlier detection (using data model)</a>
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part10') }}">Testing (V7)</a>
         <a class="sidebar-link d-none {% if request.endpoint in ('main.data_browse', 'main.data_timeseries_detail', 'main.data_causal_detail') %}active{% endif %}" href="{{ url_for('main.data_browse', tab='ts') }}">Uploaded data</a>
-        <a class="sidebar-link d-none {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
+        <a class="sidebar-link {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Dataset Upload</a>
       </nav>
     </aside>
 

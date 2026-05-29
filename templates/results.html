@@ -258,6 +258,37 @@
       }
     }
 
+    function getPart4SelectedCompare(primaryName) {
+      const sel = document.getElementById("part4AllTagsSelect");
+      if (!sel) return [];
+      const out = [];
+      for (let i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].selected) out.push(sel.options[i].value);
+      }
+      return out.filter(function (t) { return t && t !== primaryName; });
+    }
+
+    function onPart4AllTagsSelectChange() {
+      const sel = document.getElementById("part4PrimaryTag");
+      if (sel && sel.value) loadPart4Plot(sel.value);
+    }
+
+    function populatePart4CompareOptions(primaryTag) {
+      const sel = document.getElementById("part4AllTagsSelect");
+      if (!sel) return;
+      const tags = window.__part4AllTags || [];
+      const prev = new Set(Array.from(sel.selectedOptions || []).map(function (o) { return o.value; }));
+      sel.innerHTML = "";
+      tags.forEach(function (name) {
+        if (name === primaryTag) return;
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        if (prev.has(name)) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    }
+
     async function loadPart4Plot(tag) {
       const rid = window.__part4ResultId || "";
       const host = document.getElementById("part4PlotHost");
@@ -273,9 +304,12 @@
         hint.textContent = "Loading plot...";
         hint.style.display = "block";
       }
+      const params = new URLSearchParams();
+      params.set("tag", tag);
+      getPart4SelectedCompare(tag).forEach(function (c) { params.append("compare", c); });
       try {
         const res = await fetch(
-          "/api/part4/plot/" + encodeURIComponent(rid) + "?tag=" + encodeURIComponent(tag)
+          "/api/part4/plot/" + encodeURIComponent(rid) + "?" + params.toString()
         );
         if (!res.ok) {
           const err = await res.json().catch(function () { return {}; });
@@ -425,7 +459,7 @@
         if (!xs.length) {
           const tr = document.createElement("tr");
           const td = document.createElement("td");
-          td.colSpan = 2;
+          td.colSpan = window.__part4EnterpriseMode ? 4 : 2;
           td.className = "text-muted";
           td.textContent = "No correlated tags found.";
           tr.appendChild(td);
@@ -434,18 +468,472 @@
           xs.forEach(function (x) {
             const tr = document.createElement("tr");
             const tdTag = document.createElement("td");
-            const tdCorr = document.createElement("td");
             tdTag.textContent = String(x.tag || "");
+            tr.appendChild(tdTag);
+            if (window.__part4EnterpriseMode) {
+              const tdCl = document.createElement("td");
+              tdCl.textContent = x.group_id != null ? String(x.group_id) : "—";
+              tr.appendChild(tdCl);
+            }
+            const tdCorr = document.createElement("td");
             const n = Number(x.corr);
             tdCorr.textContent = Number.isNaN(n) ? "" : n.toFixed(4);
-            tr.appendChild(tdTag);
             tr.appendChild(tdCorr);
+            if (window.__part4EnterpriseMode) {
+              const tdImp = document.createElement("td");
+              const imp = Number(x.model_importance);
+              tdImp.textContent = isFinite(imp) ? imp.toFixed(4) : "—";
+              tr.appendChild(tdImp);
+            }
             xVarsBody.appendChild(tr);
           });
         }
       }
 
+      populatePart4CompareOptions(tag);
       loadPart4Plot(tag);
+      if (window.__part4EnterpriseMode) {
+        consensusRenderCorrelationSummary(tag);
+        consensusPopulateEventDateOptions(tag);
+        consensusRenderEventTable();
+      }
+    }
+
+    function consensusOnPrimaryTagChange(tag) {
+      showPart4Tag(tag);
+      if (window.__part4EnterpriseMode) consensusRenderInsights(tag);
+    }
+
+    var CONSENSUS_TAG_PAGE_SIZE = 10;
+    var CONSENSUS_EVENT_PAGE_SIZE = 15;
+    var __consensusTagPage = 1;
+    var __consensusEventPage = 1;
+    var __consensusFilteredTags = [];
+
+    function consensusShowTab(name) {
+      document.querySelectorAll(".consensus-tab-pane").forEach(function (el) {
+        el.style.display = "none";
+      });
+      const pane = document.getElementById("consensusTab_" + name);
+      if (pane) pane.style.display = "block";
+      document.querySelectorAll(".consensus-tabs .nav-link").forEach(function (btn) {
+        btn.classList.toggle("active", btn.getAttribute("data-consensus-tab") === name);
+      });
+      if (name === "graph") {
+        const sel = document.getElementById("part4PrimaryTag");
+        if (sel && sel.value) loadPart4Plot(sel.value);
+      }
+    }
+
+    function consensusStatusBadge(status, cls) {
+      const c = cls || "healthy";
+      return '<span class="consensus-status consensus-status--' + c + '">' + (status || "Normal") + "</span>";
+    }
+
+    function consensusRenderPaginationBar(containerId, page, totalPages, onPage) {
+      const host = document.getElementById(containerId);
+      if (!host) return;
+      if (totalPages <= 1) { host.innerHTML = ""; return; }
+      let html = '<div class="text-muted small">Page ' + page + " of " + totalPages + "</div><div class=\"d-flex gap-1\">";
+      html += '<button type="button" class="btn btn-sm btn-outline-secondary"' + (page <= 1 ? " disabled" : "") + ' data-p="' + (page - 1) + '">Prev</button>';
+      html += '<button type="button" class="btn btn-sm btn-outline-secondary"' + (page >= totalPages ? " disabled" : "") + ' data-p="' + (page + 1) + '">Next</button></div>';
+      host.innerHTML = html;
+      host.querySelectorAll("button[data-p]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          const p = parseInt(btn.getAttribute("data-p"), 10);
+          if (p >= 1 && p <= totalPages) onPage(p);
+        });
+      });
+    }
+
+    function consensusGetTagRows() {
+      const q = String((document.getElementById("consensusTagSearch") || {}).value || "").trim().toLowerCase();
+      const all = window.__consensusTagAnalysis || [];
+      if (!q) return all.slice();
+      return all.filter(function (r) { return String(r.tag || "").toLowerCase().indexOf(q) >= 0; });
+    }
+
+    function consensusRenderTagTable() {
+      __consensusFilteredTags = consensusGetTagRows();
+      const totalPages = Math.max(1, Math.ceil(__consensusFilteredTags.length / CONSENSUS_TAG_PAGE_SIZE));
+      if (__consensusTagPage > totalPages) __consensusTagPage = 1;
+      const start = (__consensusTagPage - 1) * CONSENSUS_TAG_PAGE_SIZE;
+      const slice = __consensusFilteredTags.slice(start, start + CONSENSUS_TAG_PAGE_SIZE);
+      const bodies = ["consensusTagTableBody", "consensusOverviewTableBody"];
+      bodies.forEach(function (id, idx) {
+        const body = document.getElementById(id);
+        if (!body) return;
+        body.innerHTML = "";
+        const rows = idx === 0 ? slice : (window.__consensusTagAnalysis || []).slice(0, 8);
+        if (!rows.length) {
+          body.innerHTML = '<tr><td colspan="6" class="text-muted">No tags match your search.</td></tr>';
+          return;
+        }
+        rows.forEach(function (r) {
+          const tr = document.createElement("tr");
+          tr.className = "consensus-tag-row";
+          tr.innerHTML =
+            "<td><code>" + r.tag + "</code></td>" +
+            "<td>" + consensusStatusBadge(r.status, r.status_class) + "</td>" +
+            "<td>" + (r.drift_score != null ? r.drift_score : 0) + "</td>" +
+            "<td>" + (r.anomaly_count != null ? r.anomaly_count : 0) + "</td>" +
+            (idx === 0
+              ? "<td class=\"small\">" + (r.correlated_tags || "—") + "</td><td><button type=\"button\" class=\"btn btn-sm btn-link p-0\">View</button></td>"
+              : "<td><button type=\"button\" class=\"btn btn-sm btn-link p-0\">View</button></td>");
+          const btn = tr.querySelector("button");
+          if (btn) btn.addEventListener("click", function () { consensusOpenTag(r.tag); });
+          body.appendChild(tr);
+        });
+      });
+      consensusRenderPaginationBar("consensusTagPagination", __consensusTagPage, totalPages, function (p) {
+        __consensusTagPage = p;
+        consensusRenderTagTable();
+      });
+    }
+
+    function consensusFilterTagTable() {
+      __consensusTagPage = 1;
+      consensusRenderTagTable();
+    }
+
+    function consensusOpenTag(tag) {
+      const sel = document.getElementById("part4PrimaryTag");
+      if (sel) sel.value = tag;
+      showPart4Tag(tag);
+      consensusShowTab("graph");
+    }
+
+    function consensusRowDateKey(ts) {
+      if (!ts) return "";
+      const s = String(ts);
+      return s.length >= 10 ? s.slice(0, 10) : s;
+    }
+
+    function consensusGetEventRowsForTag(tag) {
+      const rowsByTag = window.__part4RowsByTag || {};
+      let rows = rowsByTag[tag] || [];
+      if (window.__part4StrongAnomalyOnly) {
+        rows = rows.filter(function (r) {
+          return String(r.Final_Class || "").trim() === "Strong Anomaly";
+        });
+      } else {
+        rows = rows.filter(function (r) {
+          const fc = String(r.Final_Class || "").trim();
+          return fc && fc !== "Normal" && fc !== "Spike - Returned Normal";
+        });
+      }
+      const dateSel = document.getElementById("consensusEventDate");
+      const d = dateSel ? dateSel.value : "";
+      if (d) rows = rows.filter(function (r) { return consensusRowDateKey(r.Timestamp) === d; });
+      const fromEl = document.getElementById("consensusChartDateFrom");
+      const toEl = document.getElementById("consensusChartDateTo");
+      const fromD = fromEl && fromEl.value ? fromEl.value : "";
+      const toD = toEl && toEl.value ? toEl.value : "";
+      if (fromD) rows = rows.filter(function (r) { return consensusRowDateKey(r.Timestamp) >= fromD; });
+      if (toD) rows = rows.filter(function (r) { return consensusRowDateKey(r.Timestamp) <= toD; });
+      return rows;
+    }
+
+    function consensusPopulateEventDateOptions(tag) {
+      const sel = document.getElementById("consensusEventDate");
+      if (!sel) return;
+      const rows = (window.__part4RowsByTag || {})[tag] || [];
+      const dates = [];
+      rows.forEach(function (r) {
+        const d = consensusRowDateKey(r.Timestamp);
+        if (d && dates.indexOf(d) < 0) dates.push(d);
+      });
+      dates.sort();
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">All dates</option>';
+      dates.forEach(function (d) {
+        const opt = document.createElement("option");
+        opt.value = d;
+        opt.textContent = d;
+        sel.appendChild(opt);
+      });
+      if (cur && dates.indexOf(cur) >= 0) sel.value = cur;
+    }
+
+    function consensusOnEventDateChange() {
+      __consensusEventPage = 1;
+      consensusRenderEventTable();
+    }
+
+    function consensusApplyChartDateFilter() {
+      const sel = document.getElementById("part4PrimaryTag");
+      if (sel && sel.value) {
+        consensusRenderEventTable();
+        loadPart4Plot(sel.value);
+      }
+    }
+
+    function consensusRenderEventTable() {
+      const body = document.getElementById("part4RowsTableBody");
+      const sel = document.getElementById("part4PrimaryTag");
+      if (!body || !sel) return;
+      const tag = sel.value;
+      const rows = consensusGetEventRowsForTag(tag);
+      const totalPages = Math.max(1, Math.ceil(rows.length / CONSENSUS_EVENT_PAGE_SIZE));
+      if (__consensusEventPage > totalPages) __consensusEventPage = 1;
+      const start = (__consensusEventPage - 1) * CONSENSUS_EVENT_PAGE_SIZE;
+      const slice = rows.slice(start, start + CONSENSUS_EVENT_PAGE_SIZE);
+      body.innerHTML = "";
+      if (!slice.length) {
+        body.innerHTML = '<tr><td colspan="5" class="text-muted">No flagged events for this tag and filter.</td></tr>';
+      } else {
+        slice.forEach(function (r) {
+          const tr = document.createElement("tr");
+          const exp = r.Anomaly_explanation || r.Reason || "";
+          tr.innerHTML =
+            "<td>" + (r.Timestamp != null ? r.Timestamp : "") + "</td>" +
+            "<td>" + (r.Actual_Value != null ? Number(r.Actual_Value).toFixed(2) : "") + "</td>" +
+            "<td>" + (r.Predicted_Value != null ? Number(r.Predicted_Value).toFixed(2) : "") + "</td>" +
+            "<td>" + (r.Final_Class || "") + "</td>" +
+            '<td class="small" style="max-width:480px;white-space:pre-wrap;">' + exp + "</td>";
+          body.appendChild(tr);
+        });
+      }
+      consensusRenderPaginationBar("consensusEventPagination", __consensusEventPage, totalPages, function (p) {
+        __consensusEventPage = p;
+        consensusRenderEventTable();
+      });
+    }
+
+    function consensusRenderCorrelationSummary(tag) {
+      const host = document.getElementById("consensusCorrelationSummary");
+      if (!host) return;
+      const xs = (window.__part4XVarsByTag || {})[tag] || [];
+      if (!xs.length) {
+        host.innerHTML = "<p class=\"mb-0 text-muted small\">No strong correlated tags found for this tag.</p>";
+        return;
+      }
+      const top = xs.slice(0, 3).map(function (x) {
+        const c = Number(x.corr);
+        return (x.tag || "") + " (r=" + (isFinite(c) ? c.toFixed(2) : "—") + ")";
+      }).join(", ");
+      host.innerHTML =
+        "<h5 class=\"mb-1\">Relationship summary</h5>" +
+        "<p class=\"mb-0 small\">Top correlated tags: <strong>" + top + "</strong>. " +
+        "When these move together, deviations on <code>" + tag + "</code> may reflect shared process conditions rather than a single instrument fault.</p>";
+    }
+
+    function consensusInitInsightSelect() {
+      const sel = document.getElementById("consensusInsightTag");
+      const primary = document.getElementById("part4PrimaryTag");
+      if (!sel) return;
+      const tags = window.__part4AllTags || [];
+      sel.innerHTML = "";
+      tags.forEach(function (t) {
+        const opt = document.createElement("option");
+        opt.value = t;
+        opt.textContent = t;
+        sel.appendChild(opt);
+      });
+      if (primary && primary.value) sel.value = primary.value;
+      consensusRenderInsights(sel.value);
+    }
+
+    function consensusRenderInsights(tag) {
+      const panel = document.getElementById("consensusInsightsPanel");
+      if (!panel || !tag) return;
+      const ins = (window.__consensusInsightsByTag || {})[tag] || {};
+      let html = '<div class="consensus-insight-card"><h5>' + tag + "</h5>";
+      html += "<p>" + (ins.summary || "No insights available.") + "</p>";
+      if (ins.patterns && ins.patterns.length) {
+        html += "<h6>Patterns detected</h6><ul>";
+        ins.patterns.forEach(function (p) { html += "<li>" + p + "</li>"; });
+        html += "</ul>";
+      }
+      if (ins.contributing_tags && ins.contributing_tags.length) {
+        html += "<h6>Correlated tags involved</h6><ul>";
+        ins.contributing_tags.forEach(function (p) { html += "<li>" + p + "</li>"; });
+        html += "</ul>";
+      }
+      if (ins.explanations && ins.explanations.length) {
+        html += "<h6>What we observed</h6><ul>";
+        ins.explanations.forEach(function (p) { html += "<li>" + p + "</li>"; });
+        html += "</ul>";
+      }
+      html += "</div>";
+      panel.innerHTML = html;
+    }
+
+    function consensusExport(fmt) {
+      const rid = window.__part4ResultId || "";
+      if (!rid) return;
+      const expSel = document.getElementById("consensusExportTags");
+      const params = new URLSearchParams();
+      params.set("format", fmt);
+      if (expSel) {
+        Array.from(expSel.selectedOptions || []).forEach(function (o) {
+          if (o.value) params.append("tags", o.value);
+        });
+      }
+      window.location.href = "/api/part4/export/" + encodeURIComponent(rid) + "?" + params.toString();
+    }
+
+    function consensusSortModelCandidates(cands) {
+      const order = { done: 0, evaluated: 0, failed: 1, skipped: 2 };
+      return (cands || []).slice().sort(function (a, b) {
+        const oa = order[a.status] != null ? order[a.status] : 9;
+        const ob = order[b.status] != null ? order[b.status] : 9;
+        if (oa !== ob) return oa - ob;
+        if ((a.status === "done" || a.status === "evaluated") && (b.status === "done" || b.status === "evaluated")) {
+          const ra = a.cv_rmse != null && isFinite(Number(a.cv_rmse)) ? Number(a.cv_rmse) : Infinity;
+          const rb = b.cv_rmse != null && isFinite(Number(b.cv_rmse)) ? Number(b.cv_rmse) : Infinity;
+          return ra - rb;
+        }
+        return String(a.model_name || "").localeCompare(String(b.model_name || ""));
+      });
+    }
+
+    function mmFormatNum(v, digits) {
+      const n = Number(v);
+      if (v == null || !isFinite(n)) return "—";
+      if (Math.abs(n) >= 1e6) return n.toExponential(2);
+      return n.toFixed(digits != null ? digits : 4);
+    }
+
+    function mmStatusBadge(status) {
+      const s = String(status || "");
+      if (s === "Selected (final)") return "<span class=\"mm-badge mm-badge-selected\">Selected (final)</span>";
+      if (s === "Dropped (collinear)") return "<span class=\"mm-badge mm-badge-dropped-col\">Dropped (collinear)</span>";
+      return "<span class=\"mm-badge mm-badge-dropped\">Dropped</span>";
+    }
+
+    function mmYesDash(flag) {
+      return flag ? "<span class=\"mm-vote-yes\">Yes</span>" : "—";
+    }
+
+    function consensusRenderModelsTab(tag) {
+      const panel = document.getElementById("consensusModelsPanel");
+      if (!panel) return;
+      const esc = function (s) {
+        return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+      };
+      const metaMap = window.__multimodelMetaByTag || {};
+      const meta = metaMap[tag];
+      if (!meta) {
+        panel.innerHTML = "<p class=\"text-muted small\">No multimodel metadata for this tag. Re-run the analysis if this tag was added after processing.</p>";
+        return;
+      }
+      if (meta.error) {
+        panel.innerHTML = "<div class=\"alert alert-warning small\"><strong>Training failed:</strong> " + esc(meta.error) + "</div>";
+        return;
+      }
+
+      const nFeat = meta.n_features_in_model != null
+        ? meta.n_features_in_model
+        : (meta.features_final || []).length;
+      const sorted = consensusSortModelCandidates(meta.model_candidates || []);
+      const featRows = meta.feature_selection || [];
+      let html = "";
+
+      html += "<div class=\"mm-panel\">";
+      html += "<h5 class=\"mm-panel-title\">Feature selection for winning model</h5>";
+      html += "<p class=\"mm-panel-sub\">6-stage pipeline stats per engineered feature: relevance, selector votes (ElasticNet / Ridge / RFE), and bootstrap stability. Rows in green are used by the winning model.</p>";
+      html += "<div class=\"table-responsive\"><table class=\"table table-sm mm-table\"><thead><tr>";
+      html += "<th>Feature</th><th>Status</th><th>Pearson r</th><th>Spearman r</th><th>MI</th><th>F-stat</th>";
+      html += "<th>EN</th><th>Ridge</th><th>RFE</th><th>Votes</th><th>Stability</th><th>In model</th>";
+      html += "</tr></thead><tbody>";
+      if (!featRows.length) {
+        html += "<tr><td colspan=\"12\" class=\"text-muted\">No feature selection detail for this tag.</td></tr>";
+      } else {
+        featRows.forEach(function (r) {
+          const selected = r.status === "Selected (final)";
+          const rowCls = selected ? " mm-row-selected" : "";
+          html += "<tr class=\"" + rowCls + "\">";
+          html += "<td><code class=\"small\">" + esc(r.feature) + "</code></td>";
+          html += "<td>" + mmStatusBadge(r.status) + "</td>";
+          html += "<td>" + mmFormatNum(r.pearson_r, 4) + "</td>";
+          html += "<td>" + mmFormatNum(r.spearman_r, 4) + "</td>";
+          html += "<td>" + mmFormatNum(r.mi, 4) + "</td>";
+          html += "<td>" + mmFormatNum(r.f_stat, 2) + "</td>";
+          html += "<td>" + mmYesDash(r.en_vote) + "</td>";
+          html += "<td>" + mmYesDash(r.ridge_vote) + "</td>";
+          html += "<td>" + mmYesDash(r.rfe_vote) + "</td>";
+          html += "<td>" + esc(r.votes != null ? r.votes : "—") + "</td>";
+          html += "<td>" + mmFormatNum(r.stability, 2) + "</td>";
+          html += "<td>" + (r.in_model ? "<span class=\"mm-badge mm-badge-yes\">Yes</span>" : "—") + "</td>";
+          html += "</tr>";
+        });
+      }
+      html += "</tbody></table></div></div>";
+
+      html += "<div class=\"mm-panel\">";
+      html += "<h5 class=\"mm-panel-title\">Panel B — Model training (parallel candidates)</h5>";
+      html += "<p class=\"mm-panel-meta\">";
+      html += "Auto-selected path: <strong>" + esc(meta.model_type || "—") + "</strong>";
+      html += " · Winner: <strong>" + esc(meta.winner_model || "—") + "</strong>";
+      html += " · <strong>" + esc(nFeat) + "</strong> features used for signals";
+      if (meta.winner_cv_rmse != null) {
+        html += " · CV RMSE <strong>" + mmFormatNum(meta.winner_cv_rmse, 4) + "</strong>";
+      }
+      if (meta.winner_cv_r2 != null) {
+        html += " · CV R² <strong>" + mmFormatNum(meta.winner_cv_r2, 3) + "</strong>";
+      }
+      html += "</p>";
+      html += "<div class=\"table-responsive\"><table class=\"table table-sm mm-table\"><thead><tr>";
+      html += "<th>Model</th><th>Type</th><th>Status</th><th>CV RMSE</th><th>CV R²</th><th>Selected</th>";
+      html += "</tr></thead><tbody>";
+      sorted.forEach(function (c) {
+        const isWin = !!c.is_winner;
+        const rowCls = isWin ? " mm-model-winner" : "";
+        const st = c.status === "evaluated" ? "done" : (c.status || "—");
+        const stLabel = st === "done" ? "done" : (st === "skipped" ? "skipped" : st);
+        html += "<tr class=\"" + rowCls + "\">";
+        html += "<td>" + (isWin ? "<strong>" + esc(c.model_name) + "</strong>" : esc(c.model_name)) + "</td>";
+        html += "<td>" + esc(c.model_family || meta.model_type || "—") + "</td>";
+        html += "<td>" + esc(stLabel) + "</td>";
+        html += "<td>" + (c.cv_rmse != null ? mmFormatNum(c.cv_rmse, 4) : "—") + "</td>";
+        html += "<td>" + (c.cv_r2 != null ? mmFormatNum(c.cv_r2, 3) : "—") + "</td>";
+        html += "<td>" + (isWin ? "<span class=\"mm-badge mm-badge-winner\">Winner</span>" : "—") + "</td>";
+        html += "</tr>";
+      });
+      html += "</tbody></table></div></div>";
+
+      panel.innerHTML = html;
+    }
+
+    function consensusInitModelsTab() {
+      const sel = document.getElementById("consensusModelTag");
+      const metaMap = window.__multimodelMetaByTag || {};
+      const tags = (window.__part4AllTags && window.__part4AllTags.length)
+        ? window.__part4AllTags
+        : Object.keys(metaMap);
+      if (!sel) return;
+      sel.innerHTML = "";
+      if (!tags.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "No multimodel tags in this run";
+        sel.appendChild(opt);
+        consensusRenderModelsTab("");
+        return;
+      }
+      tags.forEach(function (t) {
+        const opt = document.createElement("option");
+        opt.value = t;
+        opt.textContent = t;
+        sel.appendChild(opt);
+      });
+      consensusRenderModelsTab(tags[0]);
+    }
+
+    function consensusInitEnterprise() {
+      window.__part4EnterpriseMode = true;
+      window.__consensusTagAnalysis = window.__consensusTagAnalysis || [];
+      window.__part4AllTags = window.__part4AllTags || [];
+      const sel = document.getElementById("part4PrimaryTag");
+      if (sel && sel.options.length) {
+        populatePart4CompareOptions(sel.value);
+        showPart4Tag(sel.value);
+      }
+      consensusRenderTagTable();
+      consensusInitInsightSelect();
+      if (window.__multimodelTab) consensusInitModelsTab();
+      consensusShowTab("overview");
     }
 
     function showDriftMonth(tagIndex, month) {
@@ -532,9 +1020,17 @@
           window.__part4DriftPointsByTag = cfg4.driftPointsByTag || {};
           window.__part4XVarsByTag = cfg4.xVarsByTag || {};
           window.__part4StrongAnomalyOnly = !!cfg4.detailTableStrongAnomalyOnly;
-          const sel = document.getElementById("part4PrimaryTag");
-          if (sel && sel.options.length > 0) {
-            showPart4Tag(sel.value);
+          window.__part4EnterpriseMode = !!cfg4.enterpriseMode;
+          window.__consensusTagAnalysis = cfg4.tagAnalysis || [];
+          window.__consensusInsightsByTag = cfg4.insightsByTag || {};
+          window.__part4AllTags = cfg4.allTags || [];
+          window.__multimodelMetaByTag = cfg4.multimodelMetaByTag || {};
+          window.__multimodelTab = !!cfg4.multimodelTab;
+          if (window.__part4EnterpriseMode) {
+            consensusInitEnterprise();
+          } else {
+            const sel = document.getElementById("part4PrimaryTag");
+            if (sel && sel.options.length > 0) showPart4Tag(sel.value);
           }
         } catch (err) {
           console.error("part4-config parse error", err);
@@ -558,6 +1054,7 @@
         {% if database_enabled %}
         <a class="sidebar-link d-none {% if request.endpoint in ('main.hourly_results', 'main.hourly_result_detail') %}active{% endif %}" href="{{ url_for('main.hourly_results') }}">Live Dashboard</a>
         <a class="sidebar-link {% if request.endpoint in ('main.live_outlier_results', 'main.live_outlier_result_detail') %}active{% endif %}" href="{{ url_for('main.live_outlier_results') }}">Live Outlier detection</a>
+        <a class="sidebar-link {% if request.endpoint == 'main.rolling_outlier_results' %}active{% endif %}" href="{{ url_for('main.rolling_outlier_results') }}">Rolling Outlier Detection</a>
         {% endif %}
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part2') }}">Offline VC</a>
         <a class="sidebar-link d-none" href="{{ url_for('main.index', tab='part3') }}">Drift Detection</a>
@@ -796,6 +1293,23 @@
 
       {% if part4 %}
       <div class="card part3-card">
+        {% if active_tab in ('part14', 'part15', 'part16') %}
+        {% include 'partials/consensus_enterprise_results.html' %}
+        <script type="application/json" id="part4-config">{{ {
+          "resultId": part4.result_id,
+          "rowsByTag": part4.details_by_tag,
+          "limitsByTag": part4.tag_limits_by_tag,
+          "driftPointsByTag": part4.drift_points_by_tag,
+          "xVarsByTag": part4.x_variables_by_tag,
+          "detailTableStrongAnomalyOnly": active_tab == 'part15',
+          "enterpriseMode": true,
+          "multimodelTab": active_tab == 'part16',
+          "tagAnalysis": part4.tag_analysis,
+          "insightsByTag": part4.insights_by_tag,
+          "allTags": part4.all_plot_tags,
+          "multimodelMetaByTag": part4.multimodel_meta_by_tag
+        }|tojson }}</script>
+        {% else %}
         {% if active_tab == 'part8' %}
         <h2 style="font-size: 18px; margin: 0 0 12px 0;">Outlier detection results</h2>
         <p class="text-muted small">V5 deviation / spike / change on uploaded time-series. Status tables list <strong>critical tags</strong> only when you configured them on the form.</p>
@@ -808,12 +1322,6 @@
         {% elif active_tab == 'part13' %}
         <h2 style="font-size: 18px; margin: 0 0 12px 0;">Outlier detection (robust consensus) results</h2>
         <p class="text-muted small">High-precision outlier detection from <code>robust_consensus_outlier_workflow.py</code> — Actual outlier when <strong>(peer residual + 3 signals)</strong> or <strong>4 of 5</strong> tests fire; Warning at 2. Isolation downgrades lone Actual rows. Use <strong>Multi-signal consensus</strong> for a slightly looser preset.</p>
-        {% elif active_tab == 'part14' %}
-        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Multi-signal consensus outlier results</h2>
-        <p class="text-muted small"><code>robust_consensus_outlier_workflow.py</code> with <strong>MULTI_SIGNAL_PRESET</strong>: per-tag inner-trim baseline; <strong>S6–S7</strong> trailing long-window and short-vs-long trend z; <strong>S8</strong> early-segment z (vs first ~28% of that tag’s timeline); relaxed S1–S5; Actual at 3 signals. See summary <strong>S6_*</strong>, <strong>S7_*</strong>, <strong>S8_*</strong>, <strong>Baseline_Trim_Each_Tail</strong>, <strong>Threshold_Mode</strong>.</p>
-        {% elif active_tab == 'part15' %}
-        <h2 style="font-size: 18px; margin: 0 0 12px 0;">Dev (Outlier detection) results</h2>
-        <p class="text-muted small">Same engine and <strong>MULTI_SIGNAL_PRESET</strong> as <em>Multi-signal consensus outlier</em>; this tab is for development or parallel runs. See run summary for S6/S7/S8 and baseline parameters.</p>
         {% elif active_tab == 'part7' %}
         <h2 style="font-size: 18px; margin: 0 0 12px 0;">Testing (V4) results</h2>
         <p class="text-muted small">Deviation / spike / change (V4) from time-series data only.</p>
@@ -828,7 +1336,9 @@
           "limitsByTag": part4.tag_limits_by_tag,
           "driftPointsByTag": part4.drift_points_by_tag,
           "xVarsByTag": part4.x_variables_by_tag,
-          "detailTableStrongAnomalyOnly": active_tab == 'part15'
+          "detailTableStrongAnomalyOnly": false,
+          "enterpriseMode": false,
+          "allTags": part4.all_plot_tags
         }|tojson }}</script>
 
         {% if part4.summary %}
@@ -976,6 +1486,7 @@
             <tbody id="part4RowsTableBody"></tbody>
           </table>
         </div>
+        {% endif %}
         {% endif %}
       </div>
       {% endif %}

@@ -1,17 +1,30 @@
+# Core — Flask dashboard (python app.py)
 Flask>=3.0.0
 python-dotenv>=1.0.0
+APScheduler>=3.10.0
+
+# Data & Excel (.xlsx upload/export; openpyxl is the default engine in services/)
 pandas>=2.2.0
 numpy>=1.26.0
 openpyxl>=3.1.0
+xlsxwriter>=3.1.0
+
+# Charts (Plotly JSON in templates; Streamlit plots)
+plotly>=5.20.0
+
+# MySQL — Live dashboard, plant datasets, scheduler (DATABASE_URL in .env)
+pymysql>=1.1.0
+cryptography>=42.0.0
+
+# Methodology Word downloads & scripts/build_dev_outlier_docx.py
+python-docx>=1.1.0
+
+# ML / statistics — causal root-cause (Pipeline/Detail_Pipeline), drift, cluster workflows
 scipy>=1.12.0
 statsmodels>=0.14.0
 scikit-learn>=1.4.0
 xgboost>=2.0.0
 shap>=0.46.0
-plotly>=5.20.0
-pymysql>=1.1.0
-cryptography>=42.0.0
-APScheduler>=3.10.0
-python-docx>=1.1.0
-streamlit>=1.28.0
 
+# Optional — Streamlit Dev UI only (streamlit run streamlit_app.py)
+streamlit>=1.28.0

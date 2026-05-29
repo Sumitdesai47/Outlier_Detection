@@ -75,7 +75,8 @@ try {
         }
     }
 
-    Write-Host "Starting Flask app at http://127.0.0.1:5001 ..."
+    $env:FLASK_USE_RELOADER = "0"
+    Write-Host "Starting Flask app at http://127.0.0.1:5001 (reloader off) ..."
     python $appScript
     exit $LASTEXITCODE
 } finally {
