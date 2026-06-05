@@ -9,8 +9,9 @@ import numpy as np
 import pandas as pd
 
 from services.multimodel_outlier.config import DEFAULT_CFG
-from services.multimodel_outlier.feature_selection_report import build_feature_selection_report
-from services.multimodel_outlier.feature_stages import run_feature_stages
+from services.numeric_safe import safe_corr_matrix
+from services.multimodel_outlier.cluster_feature_selection import run_cluster_feature_selection
+from services.multimodel_outlier.feature_selection_report import build_cluster_methodology_report
 from services.multimodel_outlier.model_training import ModelBundle, train_winner
 from services.robust_consensus_outlier_workflow import _mad_scale
 
@@ -31,8 +32,8 @@ def build_feature_clusters(
     sub = X[feats].apply(pd.to_numeric, errors="coerce")
     for c in sub.columns:
         sub[c] = sub[c].fillna(sub[c].median())
-    corr = sub.corr().fillna(0.0)
-    dist = (1.0 - corr.abs()).copy()
+    corr = safe_corr_matrix(sub)
+    dist = 1.0 - corr.abs()
     dist_arr = np.asarray(dist, dtype=float).copy()
     np.fill_diagonal(dist_arr, 0.0)
 
@@ -63,39 +64,34 @@ def build_feature_clusters(
     ]
 
 
-def _features_to_x_variables(
+def _x_variables_from_trail(
     features: List[str],
     trail: Dict[str, Any],
-    bundle: ModelBundle,
-    clusters: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    cluster_map = {str(c["feature"]): int(c["cluster_id"]) for c in clusters}
+    """Use cluster methodology x_variables; fill gaps for any model feature."""
+    by_tag = {
+        str(x.get("tag")): x
+        for x in (trail.get("x_variables") or [])
+        if x.get("tag")
+    }
+    cluster_map = trail.get("cluster_id_by_tag") or {}
     rows: List[Dict[str, Any]] = []
     for i, f in enumerate(features[:12]):
-        cid = int(cluster_map.get(f, 0))
-        if f.startswith("peer_delta__"):
-            tag = f.replace("peer_delta__", "", 1)
-            rows.append(
-                {
-                    "tag": tag,
-                    "corr": 0.0,
-                    "abs_corr": 0.0,
-                    "group_id": cid,
-                    "model_importance": 1.0 / (i + 1),
-                    "feature_name": f,
-                }
-            )
-        else:
-            rows.append(
-                {
-                    "tag": f,
-                    "corr": 0.0,
-                    "abs_corr": 0.0,
-                    "group_id": cid,
-                    "model_importance": 1.0 / (i + 1),
-                    "feature_name": f,
-                }
-            )
+        f = str(f)
+        if f in by_tag:
+            rows.append(dict(by_tag[f]))
+            continue
+        corr = float((by_tag.get(f) or {}).get("corr") or 0.0)
+        rows.append(
+            {
+                "tag": f,
+                "corr": corr,
+                "abs_corr": abs(corr),
+                "group_id": int(cluster_map.get(f, 0)),
+                "model_importance": 1.0 / (i + 1),
+                "feature_name": f,
+            }
+        )
     return rows
 
 
@@ -176,8 +172,27 @@ def build_s5_for_tag(
     tag_cols: Sequence[str],
     cfg: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Train multimodel on engineered features; return S5 series + metadata."""
-    X_all, x_final, trail = run_feature_stages(df, target_tag, tag_cols, cfg)
+    """Train multimodel on cluster-selected peer tags; return S5 series + metadata."""
+    X_all, x_final, trail = run_cluster_feature_selection(df, target_tag, tag_cols, cfg)
+    if not x_final:
+        from services.robust_consensus_outlier_workflow import _pick_peers
+
+        peers = _pick_peers(df, str(target_tag), list(tag_cols), cfg)
+        if not peers:
+            raise ValueError(trail.get("selection_note") or "No peer tags selected for this target.")
+        x_final = [p for p, _ in peers]
+        X_all = pd.DataFrame(
+            {t: pd.to_numeric(df[t], errors="coerce") for t in x_final},
+            index=df.index,
+        )
+        trail["selected_tags"] = x_final
+        trail["selection_note"] = (
+            "Cluster filters returned no peers; using top Pearson-correlated tags as fallback."
+        )
+        trail["x_variables"] = [
+            {"tag": p, "corr": float(c), "abs_corr": abs(float(c)), "group_id": 0, "feature_name": p}
+            for p, c in peers
+        ]
     y = pd.to_numeric(df[target_tag], errors="coerce")
     bundle = train_winner(X_all, y, x_final, cfg)
 
@@ -195,16 +210,18 @@ def build_s5_for_tag(
     if np.isfinite(resid_scale) and resid_scale > float(cfg.get("min_mad") or 1e-6):
         z_peer = pd.Series(resid / resid_scale, index=df.index)
 
-    clusters = build_feature_clusters(X_all, bundle.features)
-    x_vars = _features_to_x_variables(bundle.features, trail, bundle, clusters)
-    stage_sets = (trail.get("stage_sets") or {}) if isinstance(trail, dict) else {}
-    feature_selection = build_feature_selection_report(
+    cluster_map = trail.get("cluster_id_by_tag") or {}
+    clusters = [
+        {"feature": str(f), "cluster_id": int(cluster_map.get(str(f), 0))}
+        for f in bundle.features
+    ]
+    if not clusters:
+        clusters = build_feature_clusters(X_all, bundle.features)
+    x_vars = _x_variables_from_trail(bundle.features, trail)
+    feature_selection = build_cluster_methodology_report(
         target_tag,
-        X_all,
-        y,
-        stage_sets,
+        trail,
         bundle.features,
-        cfg,
     )
     return {
         "predicted": predicted,

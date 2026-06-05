@@ -28,7 +28,7 @@ FORM_CRITICAL_TAGS = "critical_tags"
 
 RUN_PRESET_SUMMARY_LINE = (
     "Multimodel Outlier Detection — MULTI_SIGNAL_PRESET; S5 on every tag uses "
-    "6-stage feature selection + ElasticNet/Ridge/Lasso or GBR/RF/SVR (CV RMSE winner)."
+    "Cluster methodology peer-tag selection + linear/nonlinear CV model winner."
 )
 
 

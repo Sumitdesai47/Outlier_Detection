@@ -3,10 +3,6 @@
     <div class="part16-hero-text">
       <p class="part16-eyebrow mb-1">Multimodel Outlier Detection</p>
       <h2 class="part16-hero-title mb-2">Upload your plant data and run intelligent outlier analysis</h2>
-      <p class="part16-hero-lead mb-0">
-        Upload a time-series Excel file. The system trains a model per tag (linear or nonlinear),
-        uses the best fit for peer prediction (S5), and returns an executive results dashboard.
-      </p>
     </div>
   </div>
 
@@ -25,68 +21,34 @@
     </li>
   </ol>
 
-  <div class="row g-3 mb-3 part16-resource-row">
-    <div class="col-md-6">
-      <a class="part16-resource-card" href="/part16/sample-template">
-        <span class="part16-resource-icon" aria-hidden="true">📊</span>
-        <span class="part16-resource-body">
-          <strong>Download sample Excel file</strong>
-          <span class="d-block text-muted small mt-1">See the exact column layout (Timestamp + numeric tags). Includes an Instructions sheet.</span>
-        </span>
-        <span class="part16-resource-cta">XLSX</span>
-      </a>
-    </div>
-    <div class="col-md-6">
-      <a class="part16-resource-card" href="/part16/user-guide">
-        <span class="part16-resource-icon" aria-hidden="true">📄</span>
-        <span class="part16-resource-body">
-          <strong>Download step-by-step guide</strong>
-          <span class="d-block text-muted small mt-1">Plain-language Word document: how to use the portal from upload to results.</span>
-        </span>
-        <span class="part16-resource-cta">DOCX</span>
-      </a>
-    </div>
+  <div class="part16-resource-row" role="group" aria-label="Downloads">
+    <a class="part16-resource-card" href="/part16/sample-template">
+      <span class="part16-resource-icon" aria-hidden="true">📊</span>
+      <span class="part16-resource-body">
+        <strong>Sample Excel file</strong>
+        <span class="d-block text-muted small mt-1">Timestamp + numeric tag columns. Includes an Instructions sheet.</span>
+      </span>
+      <span class="part16-resource-cta">XLSX</span>
+    </a>
+    <a class="part16-resource-card" href="/part16/user-guide">
+      <span class="part16-resource-icon" aria-hidden="true">📄</span>
+      <span class="part16-resource-body">
+        <strong>Step-by-step guide</strong>
+        <span class="d-block text-muted small mt-1">Word document: upload through results on this portal.</span>
+      </span>
+      <span class="part16-resource-cta">DOCX</span>
+    </a>
   </div>
 
   <div class="part16-format-card mb-3">
     <h3 class="part16-format-title">Required Excel format</h3>
-    <div class="row g-3 align-items-start">
-      <div class="col-lg-7">
-        <table class="table table-sm table-bordered mb-0 part16-format-table">
-          <thead>
-            <tr>
-              <th>Timestamp</th>
-              <th>Your_Tag_1</th>
-              <th>Your_Tag_2</th>
-              <th>…</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>2026-01-01 00:00:00</td>
-              <td>12.4</td>
-              <td>88.1</td>
-              <td class="text-muted">numeric</td>
-            </tr>
-            <tr>
-              <td>2026-01-01 01:00:00</td>
-              <td>12.7</td>
-              <td>87.9</td>
-              <td class="text-muted">numeric</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="col-lg-5">
-        <ul class="part16-checklist mb-0">
-          <li>File type: <strong>.xlsx</strong> only</li>
-          <li>First column: <strong>Timestamp</strong></li>
-          <li>Other columns: <strong>numbers only</strong> (one tag per column)</li>
-          <li>One row per time point; avoid gaps</li>
-          <li>Long files are OK — processing may take a few minutes</li>
-        </ul>
-      </div>
-    </div>
+    <ul class="part16-checklist mb-0">
+      <li>File type: <strong>.xlsx</strong> only</li>
+      <li>First column: <strong>Timestamp</strong></li>
+      <li>Other columns: <strong>numbers only</strong> (one tag per column)</li>
+      <li>One row per time point; avoid gaps</li>
+      <li>Long files are OK — processing may take a few minutes</li>
+    </ul>
   </div>
 
   <div class="part16-upload-panel">

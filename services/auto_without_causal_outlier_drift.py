@@ -162,12 +162,7 @@ def _v5_apply_critical_display_filter(
     }
     crit &= set(tag_cols)
     if not crit:
-        bundle["tag_summaries"] = []
-        bundle["top_tags_by_points"] = []
-        bundle["details_by_tag"] = {}
-        bundle["monthly_pages_by_tag"] = {}
-        bundle["tag_limits_by_tag"] = {}
-        bundle["x_variables_by_tag"] = {}
+        # No critical tags matched column names — show full run instead of empty results.
         return
 
     summaries = [
@@ -204,6 +199,9 @@ def _v5_apply_critical_display_filter(
     bundle["tag_limits_by_tag"] = {k: v for k, v in tlb.items() if k in crit}
     xvb = bundle.get("x_variables_by_tag") or {}
     bundle["x_variables_by_tag"] = {k: v for k, v in xvb.items() if k in crit}
+    mmb = bundle.get("multimodel_meta_by_tag") or {}
+    if mmb:
+        bundle["multimodel_meta_by_tag"] = {k: v for k, v in mmb.items() if k in crit}
 
 
 def _build_reason(final_class: Any, direction: Any, limit_crossed: Any) -> str:

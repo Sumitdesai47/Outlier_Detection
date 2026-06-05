@@ -18,6 +18,8 @@ from sklearn.feature_selection import mutual_info_regression
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
+from services.numeric_safe import non_constant_columns, safe_corr_matrix, safe_series_corr
+
 
 @dataclass
 class DynamicPeerSelection:
@@ -68,7 +70,7 @@ def calculate_correlation(
     rows = []
     y = frame[target_tag]
     for col in feature_cols:
-        corr = y.corr(frame[col])
+        corr = safe_series_corr(y, frame[col], method="pearson")
         rows.append(
             {
                 "Tag": col,
@@ -82,17 +84,26 @@ def calculate_correlation(
 def calculate_mutual_information(
     frame: pd.DataFrame, target_tag: str, feature_cols: Sequence[str]
 ) -> pd.DataFrame:
-    X = frame[list(feature_cols)].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    all_tags = [str(c) for c in feature_cols]
+    X = frame[all_tags].replace([np.inf, -np.inf], np.nan).fillna(0.0)
     y = frame[target_tag].replace([np.inf, -np.inf], np.nan)
     y = y.fillna(y.median())
     if len(X) < 30:
-        return pd.DataFrame({"Tag": list(feature_cols), "Mutual_Information_Score": [0.0] * len(feature_cols)})
+        return pd.DataFrame({"Tag": all_tags, "Mutual_Information_Score": [0.0] * len(all_tags)})
 
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    mi_values = mutual_info_regression(X_scaled, y.to_numpy(), random_state=42)
+    usable = non_constant_columns(X, all_tags)
+    scores = {t: 0.0 for t in all_tags}
+    if usable:
+        Xu = X[usable]
+        scaler = StandardScaler()
+        with np.errstate(invalid="ignore", divide="ignore"):
+            X_scaled = scaler.fit_transform(Xu)
+        mi_values = mutual_info_regression(X_scaled, y.to_numpy(), random_state=42)
+        for i, tag in enumerate(usable):
+            scores[tag] = float(mi_values[i])
+
     return pd.DataFrame(
-        {"Tag": list(feature_cols), "Mutual_Information_Score": mi_values}
+        {"Tag": all_tags, "Mutual_Information_Score": [scores[t] for t in all_tags]}
     ).sort_values("Mutual_Information_Score", ascending=False)
 
 
@@ -108,8 +119,8 @@ def calculate_lag_correlation(
             temp = pd.DataFrame({"target": frame[target_tag], "feature": shifted}).dropna()
             if len(temp) < 10:
                 continue
-            corr = temp["target"].corr(temp["feature"])
-            if pd.notna(corr) and abs(corr) > abs(best_corr):
+            corr = safe_series_corr(temp["target"], temp["feature"], method="pearson")
+            if abs(corr) > abs(best_corr):
                 best_corr = float(corr)
                 best_lag = lag
         lag_results.append(
@@ -178,9 +189,9 @@ def create_tag_groups(
     if len(tags) <= 1:
         return pd.DataFrame({"Tag": tags, "Group_ID": [0] * len(tags)})
 
-    group_corr = frame[tags].corr().fillna(0.0)
-    distance_matrix = (1.0 - group_corr.abs()).copy()
-    np.fill_diagonal(distance_matrix.values, 0.0)
+    group_corr = safe_corr_matrix(frame[tags])
+    dist_arr = np.asarray(1.0 - group_corr.abs(), dtype=float).copy()
+    np.fill_diagonal(dist_arr, 0.0)
 
     try:
         clustering = AgglomerativeClustering(
@@ -197,7 +208,7 @@ def create_tag_groups(
             linkage="average",
         )
 
-    labels = clustering.fit_predict(distance_matrix.to_numpy())
+    labels = clustering.fit_predict(dist_arr)
     return pd.DataFrame({"Tag": tags, "Group_ID": labels}).sort_values(["Group_ID", "Tag"])
 
 

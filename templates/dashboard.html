@@ -32,17 +32,6 @@
           {% if mysql_diagnostic %}<span class="d-block mt-1 small text-break">{{ mysql_diagnostic }}</span>{% endif %}
           <span class="d-block mt-2 small text-muted">Run <code>python scripts/check_mysql_connection.py</code> from the project folder.</span>
         </div>
-      {% elif not database_enabled %}
-        <div class="dashboard-empty-card card border-0 shadow-sm mb-4">
-          <div class="card-body p-4">
-            <h2 class="h5 mb-2">Connect MySQL</h2>
-            <p class="text-muted small mb-3">
-              Set <code>DATABASE_URL=mysql://user:pass@127.0.0.1:3306/anomaly</code> in <code>.env</code>, then run
-              <code>python scripts/init_db.py</code>. Data browse and uploads unlock automatically.
-            </p>
-            <a class="btn btn-sm btn-outline-secondary d-none" href="{{ url_for('main.index', tab='part4') }}">Continue with Auto (No Causal)</a>
-          </div>
-        </div>
       {% endif %}
 
       {% set db_ok = database_enabled and db_reachable %}

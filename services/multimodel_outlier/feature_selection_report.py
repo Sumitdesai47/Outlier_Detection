@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Sequence, Set
 import numpy as np
 import pandas as pd
 from sklearn.feature_selection import f_regression, mutual_info_regression
+
+from services.numeric_safe import safe_series_corr
 from sklearn.linear_model import ElasticNetCV, RidgeCV
 
 
@@ -35,8 +37,8 @@ def compute_relevance_stats(
     yy = yy.loc[mask]
     col_list = [str(c) for c in cols]
     for c in col_list:
-        pv = sub[c].corr(yy, method="pearson")
-        sv = sub[c].corr(yy, method="spearman")
+        pv = safe_series_corr(sub[c], yy, method="pearson")
+        sv = safe_series_corr(sub[c], yy, method="spearman")
         out[c] = {
             "pearson_r": abs(float(pv)) if pd.notna(pv) else 0.0,
             "spearman_r": abs(float(sv)) if pd.notna(sv) else 0.0,
@@ -170,6 +172,72 @@ def _feature_status(
     return "Dropped"
 
 
+def build_cluster_methodology_report(
+    target_tag: str,
+    trail: Dict[str, Any],
+    model_features: Sequence[str],
+) -> List[Dict[str, Any]]:
+    """Rows for Models & Clusters — cluster methodology peer tags (Panel A)."""
+    model_set = {str(f) for f in model_features}
+    x_vars = trail.get("x_variables") or []
+    by_tag = {str(x.get("tag")): x for x in x_vars if x.get("tag")}
+    candidates = [str(t) for t in (trail.get("candidate_tags") or [])]
+    if not candidates:
+        candidates = list(by_tag.keys())
+
+    rows: List[Dict[str, Any]] = []
+    for tag in candidates:
+        meta = by_tag.get(tag, {})
+        in_model = tag in model_set
+        rows.append(
+            {
+                "feature": str(tag),
+                "feature_key": str(tag),
+                "status": "Selected (final)" if in_model else "Dropped",
+                "pearson_r": round(abs(float(meta.get("corr") or 0.0)), 4),
+                "spearman_r": round(abs(float(meta.get("corr") or 0.0)), 4),
+                "mi": round(float(meta.get("mutual_information") or 0.0), 4),
+                "f_stat": round(float(meta.get("model_importance") or 0.0), 4),
+                "en_vote": False,
+                "ridge_vote": False,
+                "rfe_vote": False,
+                "votes": int(meta.get("group_id") or 0),
+                "stability": round(float(meta.get("lag_correlation") or 0.0), 4),
+                "in_model": in_model,
+                "cluster_id": int(meta.get("group_id") or 0),
+            }
+        )
+
+    for tag in model_set:
+        if tag not in candidates:
+            meta = by_tag.get(tag, {})
+            rows.append(
+                {
+                    "feature": str(tag),
+                    "feature_key": str(tag),
+                    "status": "Selected (final)",
+                    "pearson_r": round(abs(float(meta.get("corr") or 0.0)), 4),
+                    "spearman_r": round(abs(float(meta.get("corr") or 0.0)), 4),
+                    "mi": round(float(meta.get("mutual_information") or 0.0), 4),
+                    "f_stat": round(float(meta.get("model_importance") or 0.0), 4),
+                    "en_vote": False,
+                    "ridge_vote": False,
+                    "rfe_vote": False,
+                    "votes": int(meta.get("group_id") or 0),
+                    "stability": round(float(meta.get("lag_correlation") or 0.0), 4),
+                    "in_model": True,
+                    "cluster_id": int(meta.get("group_id") or 0),
+                }
+            )
+
+    def _sort_key(r: Dict[str, Any]) -> tuple:
+        selected = 0 if r.get("in_model") else 1
+        return (selected, -float(r.get("f_stat") or 0), -float(r.get("pearson_r") or 0))
+
+    rows.sort(key=_sort_key)
+    return rows
+
+
 def build_feature_selection_report(
     target_tag: str,
     X1: pd.DataFrame,
@@ -178,7 +246,7 @@ def build_feature_selection_report(
     model_features: Sequence[str],
     cfg: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """Rows for Panel A — all engineered features with pipeline stats."""
+    """Rows for Panel A — legacy engineered-feature pipeline stats."""
     all_cols = [str(c) for c in X1.columns]
     s2: Set[str] = set(stage_sets.get("s2") or [])
     s3: Set[str] = set(stage_sets.get("s3") or [])

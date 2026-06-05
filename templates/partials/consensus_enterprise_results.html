@@ -8,6 +8,18 @@
   </div>
 
   {% set ex = part4.executive %}
+  {% set _dq = (ex.data_quality_score|default(100))|float %}
+  {% set _flagged_pct = (100.0 - _dq) %}
+  {% if _flagged_pct > 30.0 %}
+    {% set _health_status = 'Critical' %}
+    {% set _health_class = 'critical' %}
+  {% elif _flagged_pct >= 20.0 %}
+    {% set _health_status = 'Warning' %}
+    {% set _health_class = 'warning' %}
+  {% else %}
+    {% set _health_status = 'Healthy' %}
+    {% set _health_class = 'healthy' %}
+  {% endif %}
   <div class="consensus-kpi-grid mb-3">
     <div class="consensus-kpi-card">
       <div class="consensus-kpi-label" title="Number of tags included in this run">Total Tags Analyzed</div>
@@ -22,12 +34,65 @@
       <div class="consensus-kpi-value consensus-kpi-value-sm">{{ ex.analysis_period }}</div>
     </div>
     <div class="consensus-kpi-card">
-      <div class="consensus-kpi-label" title="Share of normal (non-flagged) observations">Data Quality Score</div>
+      <div class="consensus-kpi-label" title="Share of Normal rows (inverse of flagged % used for Overall Health)">Data Quality Score</div>
       <div class="consensus-kpi-value">{{ ex.data_quality_score }}%</div>
     </div>
-    <div class="consensus-kpi-card consensus-kpi-health consensus-kpi-health--{{ ex.health_class }}">
-      <div class="consensus-kpi-label" title="Overall process health from anomaly rate">Overall Health</div>
-      <div class="consensus-kpi-value consensus-kpi-value-sm">{{ ex.health_status }}</div>
+    <div class="consensus-kpi-card consensus-kpi-health consensus-kpi-health--{{ _health_class }}" id="consensusHealthTile">
+      <div class="consensus-health-top">
+        <span class="consensus-health-icon consensus-health-icon--{{ _health_class }}" aria-hidden="true"></span>
+        <div class="consensus-health-head-text">
+          <div class="consensus-kpi-label-row">
+            <span class="consensus-kpi-label mb-0">Overall Health</span>
+            <button
+              type="button"
+              class="consensus-health-info-btn"
+              id="consensusHealthInfoBtn"
+              aria-label="Why is overall health {{ _health_status }}? Show explanation."
+              aria-expanded="false"
+              aria-controls="consensusHealthInfoPanel"
+            >i</button>
+          </div>
+          <div class="consensus-kpi-value consensus-kpi-value-sm mb-0">{{ _health_status }}</div>
+          <div class="text-muted small">Flagged {{ '%.1f'|format(_flagged_pct) }}% (from Data Quality {{ _dq }}%)</div>
+        </div>
+      </div>
+      <div id="consensusHealthInfoPanel" class="consensus-health-info-panel">
+        <p class="consensus-health-info-q mb-2"><strong>Why is overall health {{ _health_status }}?</strong></p>
+        <ul class="consensus-health-info-list mb-3">
+          {% for line in ex.health_detail_bullets|default([ex.health_why_status|default('Health reflects how many tag×time checks were flagged in this upload.')]) %}
+          <li>{{ line }}</li>
+          {% endfor %}
+        </ul>
+        <p class="consensus-health-info-q mb-2"><strong>Health categories and ranges</strong></p>
+        <div class="table-responsive consensus-health-table-wrap">
+          <table class="table table-sm table-bordered consensus-health-info-table mb-0">
+            <thead>
+              <tr>
+                <th scope="col">Category</th>
+                <th scope="col">Range</th>
+                <th scope="col">What it means</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% set _health_rows = ex.health_categories if ex.health_categories is defined and ex.health_categories else [
+                {'name': 'Healthy', 'class': 'healthy', 'threshold': '< 20% flagged', 'range': 'Less than 20% of all tag×time checks are flagged.', 'is_current': _health_status == 'Healthy'},
+                {'name': 'Warning', 'class': 'warning', 'threshold': '20% to 30% flagged', 'range': 'Flagged share is from 20% up to and including 30%.', 'is_current': _health_status == 'Warning'},
+                {'name': 'Critical', 'class': 'critical', 'threshold': '> 30% flagged', 'range': 'More than 30% of all tag×time checks are flagged.', 'is_current': _health_status == 'Critical'}
+              ] %}
+              {% for cat in _health_rows %}
+              <tr class="consensus-health-row--{{ cat.class }}{% if cat.is_current %} consensus-health-info-table--current{% endif %}">
+                <td class="consensus-health-cat-cell">
+                  <span class="consensus-health-badge consensus-health-badge--{{ cat.class }}">{{ cat.name }}</span>
+                  {% if cat.is_current %}<span class="consensus-health-info-now">This run</span>{% endif %}
+                </td>
+                <td class="consensus-health-threshold-cell">{{ cat.threshold|default(cat.range) }}</td>
+                <td class="consensus-health-rule-cell">{{ cat.range }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -183,4 +248,27 @@
       <button type="button" class="btn btn-outline-secondary" onclick="consensusExport('pdf')">PDF Summary Report</button>
     </div>
   </div>
+  <script>
+    (function () {
+      var btn = document.getElementById("consensusHealthInfoBtn");
+      var panel = document.getElementById("consensusHealthInfoPanel");
+      var tile = document.getElementById("consensusHealthTile");
+      if (!btn || !panel) return;
+      function setOpen(open) {
+        panel.classList.toggle("is-open", open);
+        btn.setAttribute("aria-expanded", open ? "true" : "false");
+        btn.classList.toggle("is-active", open);
+        if (tile) tile.classList.toggle("consensus-kpi-health--info-open", open);
+      }
+      btn.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        setOpen(!panel.classList.contains("is-open"));
+      });
+      document.addEventListener("click", function (e) {
+        if (btn.contains(e.target) || panel.contains(e.target)) return;
+        setOpen(false);
+      });
+    })();
+  </script>
 </div>

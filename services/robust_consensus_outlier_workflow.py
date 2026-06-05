@@ -354,27 +354,31 @@ def _build_baseline(df: pd.DataFrame, tag_cols: List[str], cfg: Dict[str, Any]) 
 def _pick_peers(
     df: pd.DataFrame, tag: str, tag_cols: List[str], cfg: Dict[str, Any]
 ) -> List[Tuple[str, float]]:
+    from services.numeric_safe import safe_corr_matrix, safe_series_corr
+
     if len(tag_cols) <= 1:
         return []
     other = [c for c in tag_cols if c != tag]
     if not other:
         return []
     sub = df[[tag] + other].apply(pd.to_numeric, errors="coerce")
-    valid = sub.notna().all(axis=1)
-    if int(valid.sum()) < 30:
+    for col in sub.columns:
+        med = sub[col].median()
+        sub[col] = sub[col].fillna(med if pd.notna(med) else 0.0)
+    y = sub[tag]
+    min_corr = float(cfg.get("min_peer_abs_corr") or 0.35)
+    max_peers = int(cfg.get("max_peers") or 5)
+    scored: List[Tuple[str, float]] = []
+    for peer in other:
+        c = safe_series_corr(y, sub[peer], method="pearson")
+        if np.isfinite(c):
+            scored.append((str(peer), float(c)))
+    if not scored:
         return []
-    corr = sub.loc[valid].corr().get(tag)
-    if corr is None or corr.empty:
-        return []
-    corr = corr.drop(labels=[tag], errors="ignore").dropna()
-    corr = corr.reindex(corr.abs().sort_values(ascending=False).index)
-    corr = corr[corr.abs() >= float(cfg["min_peer_abs_corr"])]
-    if corr.empty:
-        return []
-    out = []
-    for peer, c in corr.head(int(cfg["max_peers"])).items():
-        out.append((str(peer), float(c)))
-    return out
+    scored.sort(key=lambda x: abs(x[1]), reverse=True)
+    above = [(p, c) for p, c in scored if abs(c) >= min_corr]
+    pick = above[:max_peers] if above else scored[:max_peers]
+    return pick
 
 
 def _ridge_predict(X: np.ndarray, y: np.ndarray, alpha: float, mask: np.ndarray) -> np.ndarray:
@@ -712,49 +716,25 @@ def _failed_engines_numbered_display_list(row: pd.Series) -> str:
     return "\n".join(f"{i}) {n}" for i, n in enumerate(names, start=1))
 
 
+def _s5_fired(row) -> bool:
+    """Return True when the S5 Peer Residual Z engine fired on this row."""
+    return bool(row.get("Fire_S5_PEER") or row.get("S5_Peer_Fired"))
+
+
 def _build_anomaly_explanation_for_details(
-    row: pd.Series, *, eng_active: set, cfg: Dict[str, Any]
+    row, *, eng_active, cfg
 ) -> str:
-    """One short block: failed-engine list + one layman sentence (all result tabs)."""
-    _ = (eng_active, cfg)  # reserved for future per-tag wording; keep call sites stable.
+    """S5-driven plain-language verdict for the Explanation column."""
+    _ = (eng_active, cfg)
     fc = str(row.get("Final_Class_Display") or "").strip()
-    failed = _layman_failed_engines_list(row)
-    direction = str(row.get("Direction") or "").strip().lower()
-    if direction.startswith("h") or direction == "high":
-        dir_plain = "higher than"
-    elif direction.startswith("l") or direction == "low":
-        dir_plain = "lower than"
-    else:
-        dir_plain = "off"
-
-    if fc == "Strong Anomaly":
-        numbered = _failed_engines_numbered_display_list(row)
-        return (
-            "Failed checks (engines):\n"
-            f"{numbered}\n"
-            f"In simple terms: the reading was clearly {dir_plain} what we treat as normal here, "
-            f"and several separate checks agreed at the same moment, so this is flagged as the strongest type of issue."
-        )
-
-    if fc in ("Drift", "Drift + Anomaly", "Contextual Anomaly"):
-        return (
-            f"Failed engines: {failed}. "
-            f"In simple terms: something looked off compared with normal, but it did not reach the strongest “all clear failed” bar."
-        )
-
+    s5 = _s5_fired(row)
     if fc == "Normal":
-        if failed == "none":
-            return (
-                "Failed engines: none. "
-                "In simple terms: nothing here crossed the line to be called an issue for this tag."
-            )
-        return (
-            f"Failed engines: {failed}. "
-            "In simple terms: one or two checks moved a little, but not enough together to call this timestamp a problem."
-        )
-
-    return f"Failed engines: {failed}. In simple terms: class “{fc}”."
-
+        return "No issue detected."
+    return (
+        "Process issue (VC)"
+        if s5
+        else "Tag issue (Outlier detected)"
+    )
 
 def run_robust_consensus_outlier_ui(
     file_path: str,
@@ -1442,6 +1422,21 @@ def run_robust_consensus_outlier_ui(
                     }
                 )
             monthly_pages_by_tag[str(tag)] = pages
+
+    summarized = {str(s.get("tag")) for s in tag_summaries}
+    for tag in tag_cols:
+        t = str(tag)
+        if t in summarized:
+            continue
+        tag_summaries.append(
+            {
+                "tag": t,
+                "status": "Normal",
+                "drift_timestamp": None,
+                "num_drift_points": 0,
+            }
+        )
+        details_by_tag.setdefault(t, [])
 
     top_tags_by_points = sorted(
         tag_summaries, key=lambda r: int(r.get("num_drift_points") or 0), reverse=True

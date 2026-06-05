@@ -39,8 +39,15 @@ def main() -> int:
                     try:
                         cur.execute(stmt)
                     except PyMySQLOperationalError as e:
-                        if getattr(e, "args", (None,))[0] == 1061:
+                        code = getattr(e, "args", (None,))[0]
+                        if code == 1061:
                             print(f"Skip duplicate index ({path.name}): {e}")
+                            continue
+                        # Some migrations are idempotent but reference columns before they
+                        # are conditionally added later in the same file/version.
+                        # Skip these "unknown column" updates and allow later DDL to run.
+                        if code == 1054:
+                            print(f"Skip unknown-column statement ({path.name}): {e}")
                             continue
                         raise
                 print(f"Applied: {path.name}")

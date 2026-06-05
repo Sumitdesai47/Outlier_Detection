@@ -6,7 +6,7 @@ import logging
 import os
 import uuid
 from io import BytesIO
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import pymysql
@@ -81,6 +81,7 @@ from services.rolling_outlier_service import (
     build_wide_from_observation_rows,
     run_rolling_detection,
 )
+from services.db_dataset_loader import load_wide_live_outlier_excel_dataset_before_exclusive
 
 bp = Blueprint("main", __name__)
 logger = logging.getLogger(__name__)
@@ -155,7 +156,7 @@ def _build_part4_consensus_context(result: dict, result_id: str, df_for_script) 
         "result_id": result_id,
         "summary": summary,
         "top_tags_by_points": result.get("top_tags_by_points") or [],
-        "tag_names": [t.get("tag") for t in tag_summaries if t.get("tag")],
+        "tag_names": all_plot_tags or [t.get("tag") for t in tag_summaries if t.get("tag")],
         "all_plot_tags": all_plot_tags,
         "tag_summaries": tag_summaries,
         "drift_points_by_tag": drift_points_by_tag,
@@ -175,7 +176,6 @@ def _build_part4_consensus_context(result: dict, result_id: str, df_for_script) 
 # and opens the public home tab by default (unless ?tab= overrides).
 _CAUSAL_ENV = "CAUSAL_MATRIX_PATH"
 _PUBLIC_UI_TAB = "part16"
-_UI_HIDDEN_TABS = frozenset({"part14", "part15"})
 
 
 def _causal_matrix_file_configured() -> bool:
@@ -185,11 +185,9 @@ def _causal_matrix_file_configured() -> bool:
 
 def _resolve_home_tab() -> str:
     q = (request.args.get("tab") or "").strip().lower()
-    if q in _UI_HIDDEN_TABS:
-        return _PUBLIC_UI_TAB
     if q in {
         "part2", "part3", "part4", "part5", "part6", "part7", "part8", "part9",
-        "part10", "part11", "part12", "part13", "part16",
+        "part10", "part11", "part12", "part13", "part14", "part15", "part16",
     }:
         return q
     if q == "db":
@@ -1163,9 +1161,18 @@ def rolling_outlier_results():
             ctx.update(error="Choose a dataset first.")
             return render_template("rolling_outlier_results.html", **ctx)
         try:
-            meta = db_queries.get_timeseries_dataset_meta(int(dataset_id))
-            obs = db_queries.list_timeseries_observations_for_dataset(int(dataset_id))
-            wide = build_wide_from_observation_rows(obs)
+            meta = db_queries.live_outlier_excel_dataset_by_id(int(dataset_id))
+            max_obs = db_queries.live_outlier_excel_dataset_max_observed_at(int(dataset_id))
+            if not meta:
+                raise ValueError("Selected live-outlier dataset was not found.")
+            if max_obs is None:
+                raise ValueError("Selected dataset has no observations.")
+            wide = load_wide_live_outlier_excel_dataset_before_exclusive(
+                int(dataset_id),
+                max_obs + timedelta(seconds=1),
+            )
+            if wide is None or wide.empty:
+                raise ValueError("No usable rows found in selected live-outlier dataset.")
             rows, run_meta = run_rolling_detection(
                 wide,
                 window_size=int(window_size),
@@ -1173,7 +1180,7 @@ def rolling_outlier_results():
             )
             run_id = db_repo.persist_rolling_outlier_run(
                 timeseries_dataset_id=int(dataset_id),
-                dataset_name=str((meta or {}).get("original_filename") or f"dataset_{dataset_id}"),
+                dataset_name=str((meta or {}).get("dataset_name") or (meta or {}).get("original_filename") or f"live_excel_{dataset_id}"),
                 window_size=int(window_size),
                 window_mode=window_mode,
                 baseline_rows=30,
@@ -1188,7 +1195,7 @@ def rolling_outlier_results():
                 selected_dataset_id=int(dataset_id),
                 selected_run=db_queries.rolling_outlier_run_by_id(int(run_id)),
                 runs=db_queries.rolling_outlier_list_runs(),
-                datasets=db_queries.list_timeseries_datasets_page(1, per_page=500)[0],
+                datasets=db_queries.list_live_outlier_excel_datasets(),
                 tags=db_queries.rolling_outlier_distinct_tags(int(run_id)),
                 selected_tag="",
                 series=[],
@@ -1199,7 +1206,7 @@ def rolling_outlier_results():
             ctx = dict(base)
             ctx.update(
                 error=f"Rolling run failed: {e}",
-                datasets=db_queries.list_timeseries_datasets_page(1, per_page=500)[0],
+                datasets=db_queries.list_live_outlier_excel_datasets(),
                 runs=db_queries.rolling_outlier_list_runs(),
             )
             return render_template("rolling_outlier_results.html", **ctx)
@@ -1207,7 +1214,7 @@ def rolling_outlier_results():
     selected_dataset_id = request.args.get("dataset_id", type=int)
     run_id = request.args.get("run_id", type=int)
     selected_tag = (request.args.get("tag") or "").strip()
-    datasets = db_queries.list_timeseries_datasets_page(1, per_page=500)[0]
+    datasets = db_queries.list_live_outlier_excel_datasets()
     runs = db_queries.rolling_outlier_list_runs()
     selected_run = db_queries.rolling_outlier_run_by_id(int(run_id)) if run_id else (runs[0] if runs else None)
     tags: list[str] = []

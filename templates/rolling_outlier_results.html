@@ -30,7 +30,7 @@
           <form method="post" action="{{ url_for('main.rolling_outlier_results') }}">
             <div class="row g-3 align-items-end">
               <div class="col-md-6">
-                <label class="form-label-sm">Dataset (from Upload Dataset)</label>
+                <label class="form-label-sm">Dataset (from Live outlier data upload)</label>
                 <select class="form-select" name="dataset_id" required>
                   <option value="">Select dataset...</option>
                   {% for d in datasets %}
@@ -39,6 +39,13 @@
                   </option>
                   {% endfor %}
                 </select>
+                {% if not datasets %}
+                <div class="alert alert-warning mt-2 mb-0 py-2 px-3 small">
+                  No uploaded datasets found in <code>live_outlier_excel_dataset</code>.
+                  Upload one first from <a href="{{ url_for('main.outlier_excel_upload_page') }}">Live outlier data upload</a>,
+                  then refresh this page.
+                </div>
+                {% endif %}
               </div>
               <div class="col-md-2">
                 <label class="form-label-sm">Baseline rows</label>

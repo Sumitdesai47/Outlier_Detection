@@ -18,6 +18,8 @@ try:
 except Exception:
     linear_reset = None
 
+from services.numeric_safe import safe_series_corr
+
 
 @dataclass
 class ModelBundle:
@@ -55,14 +57,12 @@ def _feature_pearson_spearman(
     rows: List[Dict[str, float]] = []
     for col in sub.columns:
         s = sub[col]
-        pearson = s.corr(yy, method="pearson")
-        spearman = s.corr(yy, method="spearman")
-        if pd.isna(pearson) and pd.isna(spearman):
-            continue
+        pearson = safe_series_corr(s, yy, method="pearson")
+        spearman = safe_series_corr(s, yy, method="spearman")
         rows.append(
             {
-                "pearson": abs(float(pearson)) if pd.notna(pearson) else 0.0,
-                "spearman": abs(float(spearman)) if pd.notna(spearman) else 0.0,
+                "pearson": abs(pearson),
+                "spearman": abs(spearman),
             }
         )
     return rows
