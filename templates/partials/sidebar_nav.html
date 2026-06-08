@@ -7,3 +7,4 @@
 <a class="sidebar-link {% if request.endpoint == 'main.dataset_upload_page' %}active{% endif %}" href="{{ url_for('main.dataset_upload_page') }}">Upload data</a>
 <a class="sidebar-link {% if request.endpoint == 'main.outlier_excel_upload_page' %}active{% endif %}" href="{{ url_for('main.outlier_excel_upload_page') }}">Live outlier data upload</a>
 {% endif %}
+{% include 'partials/sidebar_nav_plant_analysis.html' %}

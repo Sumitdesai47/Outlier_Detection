@@ -1,0 +1,6 @@
+<div class="sidebar-section-label mt-3 mb-1 px-2 small text-uppercase text-muted">Plant Analysis</div>
+<a class="sidebar-link {% if request.path == '/plant-analysis/' or request.path == '/plant-analysis' %}active{% endif %}" href="/plant-analysis/">PA — Dashboard / Home</a>
+<a class="sidebar-link {% if request.path.startswith('/plant-analysis/plants') %}active{% endif %}" href="/plant-analysis/plants">PA — Plants</a>
+<a class="sidebar-link {% if request.path.startswith('/plant-analysis/upload-configure') %}active{% endif %}" href="/plant-analysis/upload-configure">PA — Upload &amp; Configure</a>
+<a class="sidebar-link {% if request.path.startswith('/plant-analysis/results') %}active{% endif %}" href="/plant-analysis/results">PA — Result Dashboard</a>
+<a class="sidebar-link {% if request.path.startswith('/plant-analysis/help') %}active{% endif %}" href="/plant-analysis/help">PA — Help / User Guide</a>

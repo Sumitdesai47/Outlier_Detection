@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 from flask import Flask
 
 from routes.dashboard import register
+from routes.plant_analysis_api import register as register_plant_analysis_api
+from routes.plant_analysis_ui import register as register_plant_analysis_ui
 from services.scheduler_service import init_scheduler_if_enabled
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -19,6 +21,8 @@ app = Flask(__name__, root_path=str(APP_ROOT))
 app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY", "dev-change-me-in-production")
 
 register(app)
+register_plant_analysis_api(app)
+register_plant_analysis_ui(app)
 init_scheduler_if_enabled(app)
 
 

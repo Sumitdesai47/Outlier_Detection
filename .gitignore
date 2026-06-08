@@ -12,6 +12,9 @@ ENV/
 .eggs/
 dist/
 build/
+plant_analysis_ui/node_modules/
+.npm-cache/
+plant_analysis_results.db
 
 # IDE / OS
 .idea/
