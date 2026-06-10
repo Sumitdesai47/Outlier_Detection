@@ -737,8 +737,9 @@ def _build_anomaly_explanation_for_details(
     )
 
 def run_robust_consensus_outlier_ui(
-    file_path: str,
+    file_path: Optional[str] = None,
     *,
+    wide_df: Optional[pd.DataFrame] = None,
     shutdown_indicator_tags: Optional[Sequence[str]] = None,
     critical_tags: Optional[Sequence[str]] = None,
     config: Optional[Dict[str, Any]] = None,
@@ -756,38 +757,54 @@ def run_robust_consensus_outlier_ui(
     # ------------------------------------------------------------------
     # 1) Load wide time series (tolerant ingestion, like part8 / part12).
     # ------------------------------------------------------------------
-    from services.auto_without_causal_outlier_drift import _load_auto_without_causal_module
-
-    mod = _load_auto_without_causal_module()
-    raw_df, _selected_sheet = mod.read_input_file(
-        file_path, sheet_name=None, max_rows=None, datetime_format=None
-    )
-    if raw_df.empty:
-        raise ValueError("Selected sheet is empty.")
-    ts_detected = mod.detect_timestamp_col(raw_df, override=None, datetime_format=None)
-    tag_cols_arg = mod.parse_tag_cols_argument(None)
-    long_df, _input_fmt, _dts, _dtag, _dval = mod.make_long_format(
-        raw_df,
-        timestamp_col=ts_detected,
-        tag_col=None,
-        value_col=None,
-        tag_cols=tag_cols_arg,
-        datetime_format=None,
-    )
-    pivot = mod.build_pivot(long_df)
-    if pivot.shape[1] == 0:
-        raise ValueError("No tag columns after pivot; check input format.")
-    df = pivot.reset_index().copy()
     ts = "Timestamp"
-    df[ts] = pd.to_datetime(df[ts], errors="coerce")
-    df = df.dropna(subset=[ts]).sort_values(ts).reset_index(drop=True)
-    tag_cols = [c for c in df.columns if c != ts]
-    for c in tag_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    tag_cols = [c for c in tag_cols if df[c].notna().sum() >= 10]
-    if len(tag_cols) < 1:
-        raise ValueError("Need at least one numeric tag with >= 10 observations.")
-    df = df[[ts] + tag_cols].copy()
+    if wide_df is not None:
+        df = wide_df.copy()
+        if ts not in df.columns:
+            raise ValueError("wide_df must contain a Timestamp column.")
+        df[ts] = pd.to_datetime(df[ts], errors="coerce")
+        df = df.dropna(subset=[ts]).sort_values(ts).reset_index(drop=True)
+        tag_cols = [c for c in df.columns if c != ts]
+        for c in tag_cols:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        tag_cols = [c for c in tag_cols if df[c].notna().sum() >= 10]
+        if len(tag_cols) < 1:
+            raise ValueError("Need at least one numeric tag with >= 10 observations.")
+        df = df[[ts] + tag_cols].copy()
+    else:
+        if not file_path:
+            raise ValueError("file_path or wide_df is required.")
+        from services.auto_without_causal_outlier_drift import _load_auto_without_causal_module
+
+        mod = _load_auto_without_causal_module()
+        raw_df, _selected_sheet = mod.read_input_file(
+            file_path, sheet_name=None, max_rows=None, datetime_format=None
+        )
+        if raw_df.empty:
+            raise ValueError("Selected sheet is empty.")
+        ts_detected = mod.detect_timestamp_col(raw_df, override=None, datetime_format=None)
+        tag_cols_arg = mod.parse_tag_cols_argument(None)
+        long_df, _input_fmt, _dts, _dtag, _dval = mod.make_long_format(
+            raw_df,
+            timestamp_col=ts_detected,
+            tag_col=None,
+            value_col=None,
+            tag_cols=tag_cols_arg,
+            datetime_format=None,
+        )
+        pivot = mod.build_pivot(long_df)
+        if pivot.shape[1] == 0:
+            raise ValueError("No tag columns after pivot; check input format.")
+        df = pivot.reset_index().copy()
+        df[ts] = pd.to_datetime(df[ts], errors="coerce")
+        df = df.dropna(subset=[ts]).sort_values(ts).reset_index(drop=True)
+        tag_cols = [c for c in df.columns if c != ts]
+        for c in tag_cols:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        tag_cols = [c for c in tag_cols if df[c].notna().sum() >= 10]
+        if len(tag_cols) < 1:
+            raise ValueError("Need at least one numeric tag with >= 10 observations.")
+        df = df[[ts] + tag_cols].copy()
 
     if plant_row_filters:
         df = _apply_plant_row_filters(df, ts, plant_row_filters)
@@ -1352,13 +1369,17 @@ def run_robust_consensus_outlier_ui(
             eng_active = _resolve_engine_set(
                 (per_tag_controls or {}).get(str(tag)) if per_tag_controls else None
             )
-            details_by_tag[str(tag)] = [
-                {
+            def _detail_row_payload(r) -> Dict[str, Any]:
+                return {
                     "Timestamp": _format_ts(r.get("Timestamp")),
                     "Actual_Value": _safe_float(r.get("Actual_Value")),
                     "Predicted_Value": _safe_float(r.get("Predicted_Value")),
                     "Final_Class": r.get("Final_Class_Display"),
+                    "Final_Status": str(r.get("Final_Status") or ""),
                     "Direction": str(r.get("Direction") or "Unknown"),
+                    "Limit_Crossed": str(r.get("Limit_Crossed") or ""),
+                    "Outside_Fence": bool(r.get("Outside_Fence")),
+                    "Signals_Fired": int(r.get("Signals_Fired") or 0),
                     "Reason": str(r.get("Reason") or "").strip()
                     or _build_reason(
                         r.get("Final_Class_Display"),
@@ -1371,11 +1392,22 @@ def run_robust_consensus_outlier_ui(
                         else "Tag issue/Outlier"
                     ),
                     "S5_Peer_Fired": bool(r.get("Fire_S5_PEER") or r.get("S5_Peer_Fired")),
+                    "Fire_S1_GLOBAL": bool(r.get("Fire_S1_GLOBAL")),
+                    "Fire_S2_LOCAL": bool(r.get("Fire_S2_LOCAL")),
+                    "Fire_S3_TUKEY": bool(r.get("Fire_S3_TUKEY")),
+                    "Fire_S4_DIFF": bool(r.get("Fire_S4_DIFF")),
+                    "Fire_S5_PEER": bool(r.get("Fire_S5_PEER")),
+                    "Fire_S6_LONG": bool(r.get("Fire_S6_LONG")),
+                    "Fire_S7_TREND": bool(r.get("Fire_S7_TREND")),
+                    "Fire_S8_EARLY": bool(r.get("Fire_S8_EARLY")),
+                    "Fire_S8_EARLY_STRONG": bool(r.get("Fire_S8_EARLY_STRONG")),
                     "Anomaly_explanation": _build_anomaly_explanation_for_details(
                         r, eng_active=eng_active, cfg=cfg
                     ),
                 }
-                for _, r in all_rows.iterrows()
+
+            details_by_tag[str(tag)] = [
+                _detail_row_payload(r) for _, r in all_rows.iterrows()
             ]
 
             tmp = all_rows.copy()
@@ -1516,25 +1548,29 @@ def run_multi_signal_outlier_detection(
     import tempfile
 
     tag_config = tag_config or {}
+    crit: Optional[List[str]]
+    if critical_tags is not None:
+        crit = [str(x) for x in critical_tags if str(x).strip()]
+    else:
+        crit = [str(k) for k in tag_config.keys() if str(k).strip()]
+    crit = crit or None
+    ui_kwargs = dict(
+        shutdown_indicator_tags=None,
+        critical_tags=crit,
+        config=config,
+        plant_status_filter=plant_status_filter,
+        plant_row_filters=plant_row_filters,
+        per_tag_controls=tag_config,
+    )
+    if "Timestamp" in filtered_df.columns:
+        return run_robust_consensus_outlier_ui(wide_df=filtered_df, **ui_kwargs)
+
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as f:
         tmp_path = f.name
     try:
-        filtered_df.to_excel(tmp_path, index=False)
-        crit: Optional[List[str]]
-        if critical_tags is not None:
-            crit = [str(x) for x in critical_tags if str(x).strip()]
-        else:
-            crit = [str(k) for k in tag_config.keys() if str(k).strip()]
-        crit = crit or None
-        return run_robust_consensus_outlier_ui(
-            tmp_path,
-            shutdown_indicator_tags=None,
-            critical_tags=crit,
-            config=config,
-            plant_status_filter=plant_status_filter,
-            plant_row_filters=plant_row_filters,
-            per_tag_controls=tag_config,
-        )
+        with pd.ExcelWriter(tmp_path, engine="openpyxl") as writer:
+            filtered_df.to_excel(writer, index=False)
+        return run_robust_consensus_outlier_ui(tmp_path, **ui_kwargs)
     finally:
         try:
             os.unlink(tmp_path)

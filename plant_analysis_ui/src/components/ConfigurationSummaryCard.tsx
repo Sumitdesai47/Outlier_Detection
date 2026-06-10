@@ -37,6 +37,23 @@ export function ConfigurationSummaryCard({ canSave, onSave }: ConfigurationSumma
       label: "Critical tags",
       value: draft.criticalTags.length ? draft.criticalTags.join(", ") : "None selected",
     },
+    {
+      label: "Analysis mode",
+      value: draft.rollingAnalysis ? "Rolling day-by-day (slow)" : "Full dataset (fast)",
+    },
+    {
+      label: "Analysis duration",
+      value:
+        draft.duration === "custom"
+          ? `${draft.customStartDate || "—"} to ${draft.customEndDate || "—"}`
+          : draft.duration === "3m"
+            ? "Last 3 months"
+            : draft.duration === "1y"
+              ? "Last 1 year"
+              : draft.duration === "6m"
+                ? "Last 6 months"
+                : "Full uploaded file",
+    },
   ];
 
   return (

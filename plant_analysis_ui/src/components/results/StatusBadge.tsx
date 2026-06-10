@@ -1,3 +1,4 @@
+import { issueTypeLabel } from "@/lib/resultTableFormat";
 import { cn } from "@/lib/utils";
 import type { ResultStatus } from "@/types/results";
 
@@ -12,7 +13,7 @@ export function StatusBadge({ status }: { status: ResultStatus | string }) {
   const cls = styles[status as ResultStatus] ?? "bg-muted text-muted-foreground";
   return (
     <span className={cn("inline-flex rounded-full border px-2.5 py-0.5 text-xs font-medium", cls)}>
-      {status}
+      {issueTypeLabel(status)}
     </span>
   );
 }

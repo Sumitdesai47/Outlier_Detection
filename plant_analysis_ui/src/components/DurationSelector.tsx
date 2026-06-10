@@ -5,6 +5,7 @@ import { usePlantAnalysisStore } from "@/store/plantAnalysisStore";
 import type { DurationOption } from "@/types";
 
 const options: { value: DurationOption; label: string }[] = [
+  { value: "full", label: "Full uploaded file" },
   { value: "3m", label: "Last 3 months" },
   { value: "6m", label: "Last 6 months" },
   { value: "1y", label: "Last 1 year" },
@@ -13,6 +14,7 @@ const options: { value: DurationOption; label: string }[] = [
 
 export function DurationSelector() {
   const duration = usePlantAnalysisStore((state) => state.draft.duration);
+  const rollingAnalysis = usePlantAnalysisStore((state) => state.draft.rollingAnalysis);
   const customStartDate = usePlantAnalysisStore((state) => state.draft.customStartDate);
   const customEndDate = usePlantAnalysisStore((state) => state.draft.customEndDate);
   const setDuration = usePlantAnalysisStore((state) => state.setDuration);
@@ -22,7 +24,11 @@ export function DurationSelector() {
     <Card>
       <CardHeader>
         <CardTitle>Duration</CardTitle>
-        <CardDescription>Select the time period to be used for analysis.</CardDescription>
+        <CardDescription>
+          {rollingAnalysis
+            ? "Rolling mode always analyzes the full uploaded file. Duration trim applies only to fast mode."
+            : "Select the time period to be used for analysis."}
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">

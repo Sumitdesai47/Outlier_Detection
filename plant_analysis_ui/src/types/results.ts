@@ -6,6 +6,25 @@ export type ResultStatus =
   | "Process Issue Only"
   | "Both";
 
+export interface FailedEngine {
+  id: string;
+  label: string;
+  detail: string;
+}
+
+export interface ModelTagEntry {
+  tag: string;
+  corr?: number | null;
+  model_importance?: number | null;
+  group_id?: number | null;
+}
+
+export interface TagContext {
+  tag: string;
+  model_tags: ModelTagEntry[];
+  all_tags: string[];
+}
+
 export interface ResultPoint {
   id: number;
   run_id: string;
@@ -22,6 +41,13 @@ export interface ResultPoint {
   interpretation: string | null;
   suggested_action: string | null;
   severity: string | null;
+  final_class?: string | null;
+  final_status?: string | null;
+  plot_status?: string | null;
+  predicted_value?: number | null;
+  s5_peer_fired?: boolean | null;
+  engines_fired?: FailedEngine[];
+  reason_short?: string | null;
 }
 
 export interface ResultSummary {
@@ -29,6 +55,8 @@ export interface ResultSummary {
   plant_name: string;
   subsystem: string;
   dataset_name: string;
+  dataset_tags?: string[];
+  x_variables_by_tag?: Record<string, ModelTagEntry[] | string[]>;
   total_tags_analyzed: number;
   total_records_processed: number;
   total_outlier_points: number;
@@ -38,6 +66,14 @@ export interface ResultSummary {
   last_processed_at: string;
   status_distribution: Partial<Record<ResultStatus, number>>;
   tag_summaries: TagSummaryRow[];
+  engine?: string;
+  methodology?: string | null;
+  cooling_period_rows?: number | null;
+  analyzed_timestamps?: number | null;
+  observation_days?: string[];
+  observation_first?: string | null;
+  observation_last?: string | null;
+  selected_day?: string | null;
 }
 
 export interface TagSummaryRow {
@@ -70,4 +106,15 @@ export interface ResultFilters {
   subsystem: string;
   runId: string;
   tag: string;
+  selectedDay: string;
+}
+
+export interface RunDayMeta {
+  observation_days: string[];
+  observation_first: string | null;
+  observation_last: string | null;
+  selected_day: string | null;
+  cooling_period_rows?: number;
+  analyzed_timestamps?: number;
+  methodology?: string;
 }

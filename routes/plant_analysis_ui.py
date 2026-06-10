@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flask import Blueprint, jsonify, send_from_directory
+from flask import Blueprint, jsonify, make_response, send_from_directory
 
 bp = Blueprint("plant_analysis", __name__)
 
@@ -20,8 +20,17 @@ def plant_analysis_app(subpath: str = ""):
     if subpath:
         asset_path = STATIC_DIR / subpath
         if asset_path.is_file():
-            return send_from_directory(STATIC_DIR, subpath)
-    return send_from_directory(STATIC_DIR, "index.html")
+            response = make_response(send_from_directory(STATIC_DIR, subpath))
+            # Avoid stale SPA bundles after `npm run build` (hashed filenames still get cached by browsers).
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            return response
+    response = make_response(send_from_directory(STATIC_DIR, "index.html"))
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 def register(app):

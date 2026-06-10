@@ -139,21 +139,39 @@ def insert_failed_analysis_run(dataset_id: int, message: str) -> None:
         conn.commit()
 
 
+def run_v5_bundle_from_wide_df(wide_df: pd.DataFrame) -> Dict[str, Any]:
+    """Run V5 on a wide dataframe (same temp-xlsx path as Live outlier data upload)."""
+    if wide_df.empty or _TS_COL not in wide_df.columns:
+        raise ValueError("No Timestamp column or empty data after parse.")
+
+    tmp_path: Optional[str] = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tf:
+            tmp_path = tf.name
+        export = wide_df.copy()
+        if "Timestamp_raw" in export.columns:
+            export = export.drop(columns=["Timestamp_raw"])
+        export.to_excel(tmp_path, index=False, engine="openpyxl")
+        return run_testing_deviation_spike_v5_outlier_drift(tmp_path)
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
 def run_v5_analysis_and_persist_for_dataset(dataset_id: int, wide_df: pd.DataFrame) -> Tuple[bool, str]:
     """
-    Write wide_df to a temp .xlsx, run ``run_testing_deviation_spike_v5_outlier_drift`` (V5 script), persist all outputs.
+    Run V5 outlier pipeline (same as Outlier detection tab) and persist results for Live Outlier uploads.
     Returns (success, user_message).
     """
     if wide_df.empty or _TS_COL not in wide_df.columns:
         insert_failed_analysis_run(dataset_id, "No Timestamp column or empty data after parse.")
         return False, "Saved upload, but outlier analysis was skipped (no usable timestamp column)."
 
-    tmp_path: Optional[str] = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tf:
-            tmp_path = tf.name
-        wide_df.to_excel(tmp_path, index=False, engine="openpyxl")
-        bundle = run_testing_deviation_spike_v5_outlier_drift(tmp_path)
+        bundle = run_v5_bundle_from_wide_df(wide_df)
         run_id = persist_v5_bundle_to_db(int(dataset_id), bundle)
         return True, f"Saved and analyzed (run id {run_id}). Open Live Outlier detection to view stored results."
     except Exception as e:
@@ -163,9 +181,3 @@ def run_v5_analysis_and_persist_for_dataset(dataset_id: int, wide_df: pd.DataFra
         except Exception as e2:
             logger.exception("insert_failed_analysis_run: %s", e2)
         return False, f"Saved upload, but outlier analysis failed: {e}"
-    finally:
-        if tmp_path:
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass

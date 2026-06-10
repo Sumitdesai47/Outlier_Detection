@@ -1,240 +1,427 @@
 import type { ComponentProps } from "react";
-import { useMemo, useState } from "react";
-import Plotly from "plotly.js-dist-min";
-import createPlotlyComponent from "react-plotly.js/factory";
-import { ZoomIn, Move, RotateCcw, Download } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { cn } from "@/lib/utils";
+import type { EChartsOption, SeriesOption } from "echarts";
+import { TimeSeriesChart } from "@/components/charts/TimeSeriesChart";
+import {
+  PLOT_MARKER_ORDER,
+  type PlotMarkerKey,
+  plotMarkerColor,
+  plotMarkerLabel,
+  resolvePlotMarkerKey,
+} from "@/lib/chart/chartMarkers";
+import { issueCategory, issueCategoryLabel } from "@/lib/issueClassification";
+import { markerTypeLabel, s5PeerLabel } from "@/lib/resultTableFormat";
 import { sortByTimestampAsc } from "@/lib/sortResults";
-import type { ResultPoint, ResultStatus } from "@/types/results";
-import { Button } from "@/components/ui/button";
-import type { Layout, PlotData } from "plotly.js";
+import { chartTimestampKey, parseChartTimestamp } from "@/lib/chart/chartTimestamps";
+import type { ResultPoint } from "@/types/results";
 
-const Plot = createPlotlyComponent(Plotly);
+const COMPARE_LINE_COLORS = ["#16a34a", "#a855f7", "#0d9488", "#ca8a04", "#7c3aed", "#ea580c"];
 
-const STATUS_COLORS: Record<string, string> = {
-  "Outlier Only": "#dc2626",
-  "Process Issue Only": "#d97706",
-  Both: "#7c3aed",
+type HighlightMeta = {
+  point: ResultPoint;
+  markerKey: PlotMarkerKey;
 };
 
-type DragMode = "zoom" | "pan";
+type MarkerDatum = {
+  value: [string, number];
+  itemStyle: { color: string };
+  tooltip: { formatter: string };
+};
 
-function parseTimestamp(value: string | null): string | null {
-  if (!value) return null;
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? value : d.toISOString();
+type LineDatum = {
+  value: [string, number];
+  actual: number;
+};
+
+type ValueBounds = { min: number; max: number };
+
+function valueBounds(points: ResultPoint[]): ValueBounds | null {
+  const values: number[] = [];
+  for (const p of points) {
+    if (p.tag_value != null && Number.isFinite(p.tag_value)) values.push(p.tag_value);
+  }
+  if (!values.length) return null;
+  return { min: Math.min(...values), max: Math.max(...values) };
+}
+
+function normalizeValue(value: number, bounds: ValueBounds): number {
+  if (bounds.max === bounds.min) return 0.5;
+  return (value - bounds.min) / (bounds.max - bounds.min);
+}
+
+function formatActualValue(value: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1000 || (abs > 0 && abs < 0.01)) return value.toExponential(4);
+  return Number(value.toFixed(4)).toString();
+}
+
+function seriesLineData(points: ResultPoint[]): LineDatum[] {
+  const out: LineDatum[] = [];
+  for (const p of sortByTimestampAsc(points)) {
+    const ts = parseChartTimestamp(p.observed_at);
+    if (!ts || p.tag_value == null) continue;
+    out.push({ value: [ts, p.tag_value], actual: p.tag_value });
+  }
+  return out;
+}
+
+function seriesNormalizedLineData(points: ResultPoint[]): LineDatum[] {
+  const bounds = valueBounds(points);
+  if (!bounds) return [];
+  const out: LineDatum[] = [];
+  for (const p of sortByTimestampAsc(points)) {
+    const ts = parseChartTimestamp(p.observed_at);
+    if (!ts || p.tag_value == null) continue;
+    out.push({
+      value: [ts, normalizeValue(p.tag_value, bounds)],
+      actual: p.tag_value,
+    });
+  }
+  return out;
+}
+
+function isSeriesHidden(name: string, hiddenSeries: Set<string>): boolean {
+  return hiddenSeries.has(name);
+}
+
+function buildChartOption(
+  primarySeries: ResultPoint[],
+  compareSeriesByTag: Map<string, ResultPoint[]>,
+  highlightByTimestamp: Map<string, HighlightMeta>,
+  selectedTag: string,
+  hiddenSeries: Set<string>,
+): EChartsOption {
+  const normalizeCompare = compareSeriesByTag.size > 0;
+  const primaryBounds = normalizeCompare ? valueBounds(primarySeries) : null;
+
+  const markerSeriesByType = new Map<PlotMarkerKey, MarkerDatum[]>();
+  for (const key of PLOT_MARKER_ORDER) markerSeriesByType.set(key, []);
+
+  for (const p of sortByTimestampAsc(primarySeries)) {
+    const hit = highlightByTimestamp.get(chartTimestampKey(p.observed_at));
+    if (!hit || p.tag_value == null) continue;
+    const ts = parseChartTimestamp(p.observed_at);
+    if (!ts) continue;
+
+    const { point, markerKey } = hit;
+    const score = point.outlier_score ?? point.process_issue_score;
+    const cat = issueCategory(point);
+    const lines = [
+      `<b>${plotMarkerLabel(markerKey)}</b>`,
+      cat ? `Issue: ${issueCategoryLabel(cat)}` : "",
+      `S5: ${s5PeerLabel(point)}`,
+      `Timestamp: ${p.observed_at}`,
+      `Actual: ${formatActualValue(p.tag_value)}`,
+      point.final_class ? `Class: ${point.final_class}` : `Marker: ${markerTypeLabel(point)}`,
+      score != null ? `Score: ${score}` : "",
+    ].filter(Boolean);
+
+    const markerY =
+      normalizeCompare && primaryBounds
+        ? normalizeValue(p.tag_value, primaryBounds)
+        : p.tag_value;
+
+    markerSeriesByType.get(markerKey)?.push({
+      value: [ts, markerY],
+      itemStyle: { color: plotMarkerColor(markerKey) },
+      tooltip: { formatter: lines.join("<br/>") },
+    });
+  }
+
+  const markerSeries: SeriesOption[] = PLOT_MARKER_ORDER.flatMap((key) => {
+    const label = plotMarkerLabel(key);
+    const data = markerSeriesByType.get(key) ?? [];
+    if (!data.length || isSeriesHidden(label, hiddenSeries)) return [];
+    return [
+      {
+        name: label,
+        type: "scatter",
+        symbolSize: 9,
+        itemStyle: { color: plotMarkerColor(key), borderColor: "#fff", borderWidth: 1 },
+        emphasis: { scale: 1.35, focus: "series" },
+        data,
+        tooltip: { trigger: "item" },
+      },
+    ];
+  });
+
+  const toLineData = normalizeCompare ? seriesNormalizedLineData : seriesLineData;
+
+  const primaryName = selectedTag || "Primary tag";
+  const lineSeries: SeriesOption[] = [
+    {
+      name: primaryName,
+      type: "line",
+      showSymbol: false,
+      smooth: false,
+      connectNulls: false,
+      lineStyle: { color: "#2563eb", width: 2.5 },
+      itemStyle: { color: "#2563eb" },
+      emphasis: { focus: "series" },
+      data: isSeriesHidden(primaryName, hiddenSeries) ? [] : toLineData(primarySeries),
+    },
+  ];
+
+  let colorIdx = 0;
+  for (const [tag, pts] of compareSeriesByTag) {
+    const color = COMPARE_LINE_COLORS[colorIdx % COMPARE_LINE_COLORS.length];
+    colorIdx += 1;
+    lineSeries.push({
+      name: tag,
+      type: "line",
+      showSymbol: false,
+      smooth: false,
+      connectNulls: false,
+      lineStyle: { color, width: 1.8, type: "dashed" },
+      itemStyle: { color },
+      emphasis: { focus: "series" },
+      data: isSeriesHidden(tag, hiddenSeries) ? [] : toLineData(pts),
+    });
+  }
+
+  return {
+    legend: { show: false },
+    grid: {
+      left: 56,
+      right: 28,
+      top: 24,
+      bottom: 72,
+      containLabel: true,
+    },
+    tooltip: {
+      trigger: "axis",
+      formatter: (params: unknown) => {
+        const items = (Array.isArray(params) ? params : [params]) as Array<{
+          axisValueLabel?: string;
+          marker?: string;
+          seriesName?: string;
+          data?: LineDatum;
+          value?: [string, number];
+        }>;
+        if (!items.length) return "";
+        const header = items[0].axisValueLabel ?? items[0].value?.[0] ?? "";
+        const markerLabels = new Set(PLOT_MARKER_ORDER.map((key) => plotMarkerLabel(key)));
+        const lines = items
+          .filter((item) => item.seriesName && !markerLabels.has(item.seriesName))
+          .map((item) => {
+            const actual = item.data?.actual ?? item.value?.[1];
+            if (actual == null || !Number.isFinite(actual)) return "";
+            const label = normalizeCompare ? "Actual" : "Value";
+            return `${item.marker ?? ""}${item.seriesName}: ${label}: ${formatActualValue(actual)}`;
+          })
+          .filter(Boolean);
+        return [header, ...lines].join("<br/>");
+      },
+    },
+    xAxis: {
+      type: "time",
+      name: "Timestamp",
+      nameLocation: "middle",
+      nameGap: 30,
+    },
+    yAxis: {
+      type: "value",
+      name: normalizeCompare ? "Normalized (0–1)" : selectedTag ? `${selectedTag} value` : "Tag value",
+      min: normalizeCompare ? 0 : undefined,
+      max: normalizeCompare ? 1 : undefined,
+      scale: !normalizeCompare,
+    },
+    series: [...lineSeries, ...markerSeries],
+  };
+}
+
+type LegendItem = {
+  key: string;
+  label: string;
+  kind: "primary" | "compare" | "marker";
+  color?: string;
+  markerKey?: PlotMarkerKey;
+  compareIdx?: number;
+};
+
+function ChartBottomLegend({
+  items,
+  hiddenSeries,
+  onToggle,
+}: {
+  items: LegendItem[];
+  hiddenSeries: Set<string>;
+  onToggle: (key: string) => void;
+}) {
+  return (
+    <div className="rounded-md border bg-muted/15 px-3 py-3">
+      <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        Chart legend — click to show or hide
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {items.map((item) => {
+          const hidden = hiddenSeries.has(item.key);
+          return (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => onToggle(item.key)}
+              className={cn(
+                "inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs transition-colors hover:bg-muted",
+                hidden && "opacity-50",
+              )}
+              aria-pressed={!hidden}
+            >
+              {item.kind === "primary" ? (
+                <span className="inline-block h-0.5 w-6 rounded bg-[#2563eb]" aria-hidden />
+              ) : null}
+              {item.kind === "compare" ? (
+                <span
+                  className="inline-block h-0 w-6 border-t-[3px] border-dashed"
+                  style={{
+                    borderColor:
+                      COMPARE_LINE_COLORS[(item.compareIdx ?? 0) % COMPARE_LINE_COLORS.length],
+                  }}
+                  aria-hidden
+                />
+              ) : null}
+              {item.kind === "marker" && item.markerKey ? (
+                <span
+                  className="inline-block h-2.5 w-2.5 rounded-full border border-white shadow-sm"
+                  style={{ backgroundColor: plotMarkerColor(item.markerKey) }}
+                  aria-hidden
+                />
+              ) : null}
+              <span className={cn("text-foreground", hidden && "line-through")}>{item.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 export function ResultGraph({
   seriesPoints,
   highlightPoints,
   selectedTag,
-  statusLabel,
+  compareTags = [],
 }: {
   seriesPoints: ResultPoint[];
   highlightPoints: ResultPoint[];
   selectedTag: string;
-  statusLabel: string;
+  compareTags?: string[];
+  statusLabel?: string;
 }) {
-  const [dragMode, setDragMode] = useState<DragMode>("zoom");
-  const [revision, setRevision] = useState(0);
-
-  const lineSource = selectedTag
-    ? seriesPoints.filter((p) => p.tag_name === selectedTag)
-    : seriesPoints;
-
-  const highlightSource = selectedTag
-    ? highlightPoints.filter((p) => p.tag_name === selectedTag)
-    : highlightPoints;
-
-  const highlightByTimestamp = useMemo(
+  const primarySeries = useMemo(
     () =>
-      new Map(
-        sortByTimestampAsc(highlightSource).map((p) => [
-          p.observed_at ?? "",
-          {
-            status: p.status as ResultStatus,
-            score: p.outlier_score ?? p.process_issue_score,
-            reason: p.reason,
-          },
-        ]),
-      ),
-    [highlightSource],
+      selectedTag
+        ? seriesPoints.filter((p) => p.tag_name === selectedTag)
+        : seriesPoints,
+    [seriesPoints, selectedTag],
   );
 
-  const sortedSeries = useMemo(() => sortByTimestampAsc(lineSource), [lineSource]);
-
-  const highlightColor = STATUS_COLORS[statusLabel] ?? "#7c3aed";
-
-  const { data, layout } = useMemo(() => {
-    const x = sortedSeries.map((p) => parseTimestamp(p.observed_at));
-    const y = sortedSeries.map((p) => p.tag_value);
-
-    const highlightX: string[] = [];
-    const highlightY: number[] = [];
-    const hoverText: string[] = [];
-
-    for (const p of sortedSeries) {
-      const hit = highlightByTimestamp.get(p.observed_at ?? "");
-      if (!hit || p.tag_value == null) continue;
-      const ts = parseTimestamp(p.observed_at);
-      if (!ts) continue;
-      highlightX.push(ts);
-      highlightY.push(p.tag_value);
-      hoverText.push(
-        [
-          `<b>${statusLabel}</b>`,
-          `Timestamp: ${p.observed_at}`,
-          `Value: ${p.tag_value}`,
-          `Status: ${hit.status}`,
-          hit.score != null ? `Score: ${hit.score}` : "",
-          hit.reason ? `Reason: ${hit.reason}` : "",
-        ]
-          .filter(Boolean)
-          .join("<br>"),
-      );
+  const compareSeriesByTag = useMemo(() => {
+    const map = new Map<string, ResultPoint[]>();
+    for (const tag of compareTags) {
+      if (!tag || tag === selectedTag) continue;
+      const pts = seriesPoints.filter((p) => p.tag_name === tag);
+      if (pts.length) map.set(tag, pts);
     }
+    return map;
+  }, [seriesPoints, compareTags, selectedTag]);
 
-    const traces: Partial<PlotData>[] = [
+  const highlightByTimestamp = useMemo(() => {
+    const source = selectedTag
+      ? highlightPoints.filter((p) => p.tag_name === selectedTag)
+      : highlightPoints;
+    const map = new Map<string, HighlightMeta>();
+    for (const p of sortByTimestampAsc(source)) {
+      const markerKey = resolvePlotMarkerKey(p);
+      if (!markerKey) continue;
+      map.set(chartTimestampKey(p.observed_at), { point: p, markerKey });
+    }
+    return map;
+  }, [highlightPoints, selectedTag]);
+
+  const activeMarkerKeys = useMemo(() => {
+    const keys = new Set<PlotMarkerKey>();
+    for (const { markerKey } of highlightByTimestamp.values()) keys.add(markerKey);
+    return PLOT_MARKER_ORDER.filter((key) => keys.has(key));
+  }, [highlightByTimestamp]);
+
+  const compareList = compareTags.filter((tag) => tag && tag !== selectedTag);
+
+  const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    setHiddenSeries(new Set());
+  }, [selectedTag, compareList.join("|"), activeMarkerKeys.join("|")]);
+
+  const legendItems = useMemo((): LegendItem[] => {
+    const items: LegendItem[] = [
       {
-        type: "scatter",
-        mode: "lines",
-        name: "Full tag trend",
-        x,
-        y,
-        line: { color: "#2563eb", width: 2 },
-        hovertemplate:
-          "<b>Full tag trend</b><br>Timestamp: %{x}<br>Value: %{y:.4f}<br>Status: Normal<extra></extra>",
-      },
-      {
-        type: "scatter",
-        mode: "markers",
-        name: statusLabel,
-        x: highlightX,
-        y: highlightY,
-        marker: {
-          color: highlightColor,
-          size: 11,
-          line: { color: "#ffffff", width: 1.5 },
-          symbol: "circle",
-        },
-        text: hoverText,
-        hovertemplate: "%{text}<extra></extra>",
+        key: selectedTag || "Primary tag",
+        label: selectedTag || "Primary tag",
+        kind: "primary",
       },
     ];
+    compareList.forEach((tag, idx) => {
+      items.push({ key: tag, label: tag, kind: "compare", compareIdx: idx });
+    });
+    for (const markerKey of activeMarkerKeys) {
+      const label = plotMarkerLabel(markerKey);
+      items.push({ key: label, label, kind: "marker", markerKey });
+    }
+    return items;
+  }, [selectedTag, compareList, activeMarkerKeys]);
 
-    const chartLayout: Partial<Layout> = {
-      autosize: true,
-      height: 420,
-      margin: { t: 24, r: 24, b: 72, l: 64 },
-      paper_bgcolor: "rgba(0,0,0,0)",
-      plot_bgcolor: "rgba(0,0,0,0)",
-      hovermode: "x unified",
-      dragmode: dragMode,
-      showlegend: true,
-      legend: { orientation: "h", y: 1.12, x: 0 },
-      xaxis: {
-        title: { text: "Timestamp" },
-        type: "date",
-        rangeslider: { visible: true, thickness: 0.08 },
-        gridcolor: "rgba(148,163,184,0.25)",
-        showspikes: true,
-        spikemode: "across",
-        spikecolor: "#64748b",
-        spikethickness: 1,
-      },
-      yaxis: {
-        title: { text: selectedTag ? `${selectedTag} value` : "Tag value" },
-        gridcolor: "rgba(148,163,184,0.25)",
-        zeroline: false,
-        fixedrange: false,
-      },
-    };
+  const toggleSeries = (key: string) => {
+    setHiddenSeries((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
-    return { data: traces, layout: chartLayout };
-  }, [sortedSeries, highlightByTimestamp, highlightColor, statusLabel, selectedTag, dragMode]);
-
-  if (!sortedSeries.length) {
-    return (
-      <div className="flex h-72 items-center justify-center rounded-lg border bg-muted/20 text-sm text-muted-foreground">
-        Select a tag to view the full time series with highlighted findings.
-      </div>
-    );
-  }
+  const option = useMemo(
+    () =>
+      buildChartOption(
+        primarySeries,
+        compareSeriesByTag,
+        highlightByTimestamp,
+        selectedTag,
+        hiddenSeries,
+      ),
+    [primarySeries, compareSeriesByTag, highlightByTimestamp, selectedTag, hiddenSeries],
+  );
 
   return (
-    <div className="space-y-3 rounded-lg border bg-card p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant={dragMode === "zoom" ? "default" : "outline"}
-          className="h-8 gap-1.5 px-3 text-xs"
-          onClick={() => setDragMode("zoom")}
-        >
-          <ZoomIn className="h-3.5 w-3.5" />
-          Box zoom
-        </Button>
-        <Button
-          variant={dragMode === "pan" ? "default" : "outline"}
-          className="h-8 gap-1.5 px-3 text-xs"
-          onClick={() => setDragMode("pan")}
-        >
-          <Move className="h-3.5 w-3.5" />
-          Pan
-        </Button>
-        <Button
-          variant="outline"
-          className="h-8 gap-1.5 px-3 text-xs"
-          onClick={() => setRevision((n) => n + 1)}
-        >
-          <RotateCcw className="h-3.5 w-3.5" />
-          Reset view
-        </Button>
-        <span className="text-xs text-muted-foreground">
-          Scroll to zoom · Double-click to reset · Use range slider below chart
-        </span>
-      </div>
-
-      <Plot
-        data={data}
-        layout={layout}
-        revision={revision}
-        useResizeHandler
-        style={{ width: "100%", minHeight: 420 }}
-        config={{
-          scrollZoom: true,
-          responsive: true,
-          displaylogo: false,
-          modeBarButtonsToRemove: ["lasso2d", "select2d"],
-          toImageButtonOptions: {
-            format: "png",
-            filename: `plant_analysis_${selectedTag || "tag"}_chart`,
-            scale: 2,
-          },
-          modeBarButtonsToAdd: ["zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d"],
-        }}
+    <div className="space-y-3">
+      <TimeSeriesChart
+        key={`${selectedTag}|${compareList.join(",")}|${activeMarkerKeys.join(",")}`}
+        option={option}
+        filename={`plant_analysis_${selectedTag || "tag"}_chart`}
+        empty={!primarySeries.length}
+        emptyMessage="Select a tag to view the full time series with highlighted findings."
+        showToolbar
       />
-
-      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <Download className="h-3.5 w-3.5" />
-        Use the camera icon on the chart to download PNG. Toolbar supports zoom in, zoom out, autoscale, and reset.
-      </p>
+      {primarySeries.length ? (
+        <ChartBottomLegend
+          items={legendItems}
+          hiddenSeries={hiddenSeries}
+          onToggle={toggleSeries}
+        />
+      ) : null}
     </div>
   );
 }
 
-export function OutlierGraph(
-  props: Omit<ComponentProps<typeof ResultGraph>, "statusLabel">,
-) {
-  return <ResultGraph {...props} statusLabel="Outlier Only" />;
+export function OutlierGraph(props: Omit<ComponentProps<typeof ResultGraph>, "statusLabel">) {
+  return <ResultGraph {...props} />;
 }
 
-export function ProcessIssueGraph(
-  props: Omit<ComponentProps<typeof ResultGraph>, "statusLabel">,
-) {
-  return <ResultGraph {...props} statusLabel="Process Issue Only" />;
+export function ProcessIssueGraph(props: Omit<ComponentProps<typeof ResultGraph>, "statusLabel">) {
+  return <ResultGraph {...props} />;
 }
 
-export function BothIssueGraph(
-  props: Omit<ComponentProps<typeof ResultGraph>, "statusLabel">,
-) {
-  return <ResultGraph {...props} statusLabel="Both" />;
+export function BothIssueGraph(props: Omit<ComponentProps<typeof ResultGraph>, "statusLabel">) {
+  return <ResultGraph {...props} />;
 }

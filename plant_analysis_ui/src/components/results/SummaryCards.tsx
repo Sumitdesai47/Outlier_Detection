@@ -1,20 +1,14 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/results/StatusBadge";
-import { summaryCombinedAbnormal, visibleStatusDistribution } from "@/lib/summaryMetrics";
+import { visibleStatusDistribution } from "@/lib/summaryMetrics";
 import type { ResultSummary } from "@/types/results";
 
 export function SummaryCards({ summary }: { summary: ResultSummary }) {
-  const outlierExclusive = summary.total_outlier_points;
-  const processExclusive = summary.total_process_issue_points;
-  const combinedAbnormal = summaryCombinedAbnormal(summary);
-
   const kpis = [
     { label: "Total tags analyzed", value: summary.total_tags_analyzed },
     { label: "Total records processed", value: summary.total_records_processed },
-    { label: "Outlier", value: outlierExclusive },
-    { label: "Process issue", value: processExclusive },
-    { label: "Both", value: combinedAbnormal },
-    { label: "Dataset window", value: summary.analysis_duration || "Full uploaded dataset" },
+    { label: "Tag issue", value: summary.total_outlier_points },
+    { label: "Process issue", value: summary.total_process_issue_points },
   ];
 
   return (

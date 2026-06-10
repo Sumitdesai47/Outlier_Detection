@@ -4,8 +4,11 @@ import { AppSidebar } from "@/components/layout/AppSidebar";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { PlantsPage } from "@/pages/PlantsPage";
 import { UploadConfigurePage } from "@/pages/UploadConfigurePage";
+import { LiveUploadConfigurePage } from "@/pages/LiveUploadConfigurePage";
 import { HelpPage } from "@/pages/HelpPage";
 import { ResultDashboardPage } from "@/pages/ResultDashboardPage";
+import { LiveResultDashboardPage } from "@/pages/LiveResultDashboardPage";
+import { LiveResultsRedirect } from "@/components/layout/LiveResultsRedirect";
 
 export default function App() {
   return (
@@ -17,7 +20,10 @@ export default function App() {
             <Route path="/" element={<DashboardPage />} />
             <Route path="/plants" element={<PlantsPage />} />
             <Route path="/upload-configure" element={<UploadConfigurePage />} />
+            <Route path="/live-upload-configure" element={<LiveUploadConfigurePage />} />
             <Route path="/results" element={<ResultDashboardPage />} />
+            <Route path="/results/live" element={<LiveResultDashboardPage />} />
+            <Route path="/live-results" element={<LiveResultsRedirect />} />
             <Route path="/help" element={<HelpPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

@@ -53,6 +53,16 @@ export function DashboardPage() {
                   View Result Dashboard
                 </Button>
               </Link>
+              <Link to="/live-upload-configure">
+                <Button variant="outline" className="inline-flex items-center gap-2">
+                  Upload Live Outlier Data
+                </Button>
+              </Link>
+              <Link to="/results/live">
+                <Button variant="outline" className="inline-flex items-center gap-2">
+                  View Live Result Dashboard
+                </Button>
+              </Link>
             </div>
           </CardContent>
         </Card>

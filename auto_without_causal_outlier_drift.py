@@ -386,27 +386,29 @@ def read_input_file(
 
     if suffix in [".xlsx", ".xls"]:
         if selected_sheet is None:
-            xl = pd.ExcelFile(path_obj)
+            with pd.ExcelFile(path_obj) as xl:
+                preferred_sheet_names = [
+                    "all_results", "all result", "allresults",
+                    "results", "result", "data", "raw_data", "raw data",
+                    "timeseries", "time_series", "time series"
+                ]
 
-            preferred_sheet_names = [
-                "all_results", "all result", "allresults",
-                "results", "result", "data", "raw_data", "raw data",
-                "timeseries", "time_series", "time series"
-            ]
+                lower_to_original = {str(s).strip().lower(): s for s in xl.sheet_names}
+                for preferred in preferred_sheet_names:
+                    if preferred in lower_to_original:
+                        selected_sheet = lower_to_original[preferred]
+                        break
 
-            lower_to_original = {str(s).strip().lower(): s for s in xl.sheet_names}
-            for preferred in preferred_sheet_names:
-                if preferred in lower_to_original:
-                    selected_sheet = lower_to_original[preferred]
-                    break
-
-            if selected_sheet is None:
-                sheet_scores = [(s, excel_sheet_score(path_obj, s, datetime_format=datetime_format)) for s in xl.sheet_names]
-                sheet_scores = sorted(sheet_scores, key=lambda x: x[1], reverse=True)
-                if not sheet_scores or sheet_scores[0][1] < 1:
-                    selected_sheet = xl.sheet_names[0]
-                else:
-                    selected_sheet = sheet_scores[0][0]
+                if selected_sheet is None:
+                    sheet_scores = [
+                        (s, excel_sheet_score(path_obj, s, datetime_format=datetime_format))
+                        for s in xl.sheet_names
+                    ]
+                    sheet_scores = sorted(sheet_scores, key=lambda x: x[1], reverse=True)
+                    if not sheet_scores or sheet_scores[0][1] < 1:
+                        selected_sheet = xl.sheet_names[0]
+                    else:
+                        selected_sheet = sheet_scores[0][0]
 
         df = _read_excel_first_row_as_column_names(path_obj, selected_sheet, max_rows)
     elif suffix == ".csv":

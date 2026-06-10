@@ -15,6 +15,6 @@ export default defineConfig({
     emptyOutDir: true,
   },
   optimizeDeps: {
-    include: ["plotly.js-dist-min", "react-plotly.js"],
+    include: ["echarts", "echarts-for-react"],
   },
 });

@@ -40,9 +40,10 @@ const emptyDraft = (): AnalysisDraft => ({
   direction: "both",
   tagConditions: [],
   criticalTags: [],
-  duration: "6m",
+  duration: "full",
   customStartDate: "",
   customEndDate: "",
+  rollingAnalysis: false,
 });
 
 interface PlantAnalysisState {
@@ -67,6 +68,7 @@ interface PlantAnalysisState {
   toggleCriticalTag: (tag: string) => void;
   setDuration: (duration: DurationOption) => void;
   setCustomDateRange: (start: string, end: string) => void;
+  setRollingAnalysis: (enabled: boolean) => void;
   saveConfiguration: () => SavedConfiguration | null;
   resetDraft: () => void;
 }
@@ -250,6 +252,15 @@ export const usePlantAnalysisStore = create<PlantAnalysisState>()(
             ...state.draft,
             customStartDate: start,
             customEndDate: end,
+          },
+        })),
+
+      setRollingAnalysis: (enabled) =>
+        set((state) => ({
+          draft: {
+            ...state.draft,
+            rollingAnalysis: enabled,
+            duration: enabled ? "full" : state.draft.duration,
           },
         })),
 

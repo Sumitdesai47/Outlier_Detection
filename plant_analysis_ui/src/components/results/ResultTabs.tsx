@@ -9,18 +9,20 @@ const tabs: { id: ResultTab; label: string; helper: string }[] = [
   },
   {
     id: "outlier",
-    label: "Only Outlier Detection",
-    helper: "Points classified as outlier only — sensor-level deviations.",
+    label: "Tag issue",
+    helper:
+      "Outlier detected and S5 peer engine failed — the tag diverges from related peer tags.",
   },
   {
     id: "process",
-    label: "Process Issue",
-    helper: "Points classified as process issue only — correlated process shifts.",
+    label: "Process issue",
+    helper:
+      "Outlier detected and S5 peer engine passed — pattern aligns with wider process movement.",
   },
   {
     id: "both",
-    label: "Outlier and Process Issue Both",
-    helper: "Points where both outlier and process issue conditions are true.",
+    label: "Both",
+    helper: "All abnormal points — tag issue and process issue combined.",
   },
 ];
 

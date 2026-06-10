@@ -1,7 +1,9 @@
+import { parseChartTimestamp } from "@/lib/chart/chartTimestamps";
+
 export function sortByTimestampAsc<T extends { observed_at: string | null }>(rows: T[]): T[] {
   return [...rows].sort((a, b) => {
-    const ta = a.observed_at ? new Date(a.observed_at).getTime() : Number.NaN;
-    const tb = b.observed_at ? new Date(b.observed_at).getTime() : Number.NaN;
+    const ta = a.observed_at ? Date.parse(parseChartTimestamp(a.observed_at) ?? a.observed_at) : Number.NaN;
+    const tb = b.observed_at ? Date.parse(parseChartTimestamp(b.observed_at) ?? b.observed_at) : Number.NaN;
     const aValid = Number.isFinite(ta);
     const bValid = Number.isFinite(tb);
     if (!aValid && !bValid) return 0;

@@ -1,10 +1,12 @@
 import { NavLink } from "react-router-dom";
 import {
+  Activity,
   Factory,
   HelpCircle,
   LayoutDashboard,
   UploadCloud,
 } from "lucide-react";
+import { LiveResultDashboardNav } from "@/components/layout/LiveResultDashboardNav";
 import { ResultDashboardNav } from "@/components/layout/ResultDashboardNav";
 import { cn } from "@/lib/utils";
 
@@ -12,6 +14,7 @@ const links = [
   { to: "/", label: "Dashboard / Home", icon: LayoutDashboard },
   { to: "/plants", label: "Plants", icon: Factory },
   { to: "/upload-configure", label: "Upload & Configure Analysis", icon: UploadCloud },
+  { to: "/live-upload-configure", label: "Upload & Configure Live", icon: Activity },
   { to: "/help", label: "Help / User Guide", icon: HelpCircle },
 ];
 
@@ -28,7 +31,7 @@ export function AppSidebar() {
         </p>
       </div>
       <nav className="flex flex-1 flex-col gap-1 overflow-y-auto p-4">
-        {links.slice(0, 3).map(({ to, label, icon: Icon }) => (
+        {links.slice(0, 4).map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}
@@ -48,8 +51,9 @@ export function AppSidebar() {
         ))}
 
         <ResultDashboardNav />
+        <LiveResultDashboardNav />
 
-        {links.slice(3).map(({ to, label, icon: Icon }) => (
+        {links.slice(4).map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}

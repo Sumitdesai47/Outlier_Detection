@@ -1,6 +1,6 @@
 export type Direction = "both" | "up" | "down";
 
-export type DurationOption = "3m" | "6m" | "1y" | "custom";
+export type DurationOption = "full" | "3m" | "6m" | "1y" | "custom";
 
 export type TagConditionOperator = ">" | "<" | "=" | "between";
 
@@ -48,6 +48,8 @@ export interface AnalysisDraft {
   duration: DurationOption;
   customStartDate: string;
   customEndDate: string;
+  /** Day-by-day rolling (slow). Default off = full-dataset run (~2 min). */
+  rollingAnalysis: boolean;
 }
 
 export interface SavedConfiguration {
